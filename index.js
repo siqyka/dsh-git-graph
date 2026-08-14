@@ -4,8 +4,8 @@
 //   GET /git-graph/index.html                           -> the visualizer page
 // Commands are executed with execFile (no shell), fixed argument lists only.
 import { execFile } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { readFileSync, statSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -95,6 +95,60 @@ function parseRefs(raw) {
   return refs
 }
 
+/**
+ * Parse `git status --porcelain=v1 -z` output. Returns [{x, y, path, oldPath?}].
+ * In -z mode rename/copy entries emit two records: "XY <new path>" then "<old path>".
+ */
+function parsePorcelainZ(buf) {
+  const records = []
+  const parts = buf.split('\0')
+  for (let i = 0; i < parts.length; i++) {
+    const rec = parts[i]
+    if (!rec || rec.length < 3) continue
+    const x = rec[0]
+    const y = rec[1]
+    const path = rec.slice(3)
+    if ((x === 'R' || x === 'C') && i + 1 < parts.length && parts[i + 1]) {
+      records.push({ x, y, path, oldPath: parts[i + 1] })
+      i++
+      continue
+    }
+    records.push({ x, y, path })
+  }
+  return records
+}
+
+/**
+ * Parse `git diff --numstat -z` output into a path -> {added, deleted} map.
+ * Normal entries are "added\tdeleted\t<path>"; rename entries are
+ * "added\tdeleted" + "\0" + "<old>" + "\0" + "<new>" (keyed by the new path);
+ * binary entries use "-" for both counts.
+ */
+function parseNumstatZ(buf) {
+  const map = new Map()
+  const parts = buf.split('\0')
+  for (let i = 0; i < parts.length; i++) {
+    const rec = parts[i]
+    if (!rec) continue
+    const fields = rec.split('\t')
+    if (fields.length < 2) continue
+    const added = fields[0]
+    const deleted = fields[1]
+    let key
+    if (fields.length >= 3) {
+      key = fields[2]
+    } else {
+      // rename: "n\tn" then "<old>" then "<new>"
+      const old = i + 1 < parts.length ? parts[i + 1] : ''
+      const next = i + 2 < parts.length ? parts[i + 2] : ''
+      key = next || old
+      i += 2
+    }
+    if (key) map.set(key, { added, deleted })
+  }
+  return map
+}
+
 export function apply(ctx, config = {}) {
   const configured = []
   if (config.repo) configured.push(String(config.repo))
@@ -158,35 +212,6 @@ export function apply(ctx, config = {}) {
           return
         }
 
-        if (op === 'listdir') {
-          // Directory browser for the manual-repo picker. Read-only, no repo check.
-          const target = url.searchParams.get('path') || ''
-          if (!target) {
-            sendJson({ ok: false, error: 'missing-path' }, 400)
-            return
-          }
-          let entries = []
-          try {
-            const st = statSync(target)
-            if (!st.isDirectory()) {
-              sendJson({ ok: false, error: 'not-a-directory', path: target }, 400)
-              return
-            }
-            const names = readdirSync(target, { withFileTypes: true })
-            entries = names.map((d) => ({
-              name: d.name,
-              isDir: d.isDirectory(),
-              isGit: d.isDirectory() && existsSync(join(target, d.name, '.git')),
-            }))
-            entries.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name, 'zh') : a.isDir ? -1 : 1))
-          } catch (err) {
-            sendJson({ ok: false, error: String((err && err.message) || err), path: target }, 500)
-            return
-          }
-          sendJson({ ok: true, path: target, entries })
-          return
-        }
-
         let repo = url.searchParams.get('repo') || allowed[0]
         const repoNorm = normalize(repo || '')
         if (!repoNorm || (!allowed.includes(repoNorm) && !recentRepos.has(repoNorm))) {
@@ -239,11 +264,96 @@ export function apply(ctx, config = {}) {
             sendJson({ ok: true, branches })
             break
           }
-          case 'status': {
-            const porcelain = await runGit(repo, ['status', '--porcelain=v1', '-b']).catch(() => '')
-            const staged = await runGit(repo, ['diff', '--cached', '--stat']).catch(() => '')
-            const unstaged = await runGit(repo, ['diff', '--stat']).catch(() => '')
-            sendJson({ ok: true, porcelain, stagedStat: staged, unstagedStat: unstaged })
+          case 'workstatus': {
+            // VSCode-style working-tree overview: structured file lists grouped by
+            // staged / unstaged / untracked, with per-file +/- counts (numstat).
+            const branch = (await runGit(repo, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '')).trim() || 'HEAD'
+            const statusOut = await runGit(repo, ['status', '--porcelain=v1', '-z']).catch(() => '')
+            const stagedNum = await runGit(repo, ['diff', '--cached', '--numstat', '-z']).catch(() => '')
+            const unstagedNum = await runGit(repo, ['diff', '--numstat', '-z']).catch(() => '')
+            const stagedCounts = parseNumstatZ(stagedNum)
+            const unstagedCounts = parseNumstatZ(unstagedNum)
+            const staged = []
+            const unstaged = []
+            const untracked = []
+            for (const r of parsePorcelainZ(statusOut)) {
+              const num = (m) => {
+                const n = m.get(r.path)
+                return n ? { added: n.added === '-' ? null : parseInt(n.added, 10) || 0, deleted: n.deleted === '-' ? null : parseInt(n.deleted, 10) || 0, binary: n.added === '-' } : { added: 0, deleted: 0, binary: false }
+              }
+              const conflict = (r.x === 'U' || r.x === 'A' || r.x === 'D') && (r.y === 'U' || r.y === 'A' || r.y === 'D')
+              if (r.x === '?' && r.y === '?') {
+                untracked.push({ path: r.path })
+                continue
+              }
+              if (conflict) {
+                unstaged.push({ path: r.path, oldPath: r.oldPath || '', code: 'U', ...num(unstagedCounts) })
+                continue
+              }
+              if (r.x !== ' ' && r.x !== '?') {
+                staged.push({ path: r.path, oldPath: r.oldPath || '', code: r.x, ...num(stagedCounts) })
+              }
+              if (r.y !== ' ' && r.y !== '?') {
+                unstaged.push({ path: r.path, oldPath: r.oldPath || '', code: r.y, ...num(unstagedCounts) })
+              }
+            }
+            sendJson({
+              ok: true,
+              repo,
+              branch,
+              staged,
+              unstaged,
+              untracked,
+              counts: { staged: staged.length, unstaged: unstaged.length, untracked: untracked.length },
+            })
+            break
+          }
+          case 'workfile': {
+            // Per-file diff (or content for untracked files) of the working tree.
+            const file = url.searchParams.get('file')
+            const staged = url.searchParams.get('staged') || '0' // '0' | '1' | 'untracked'
+            if (!file) {
+              sendJson({ ok: false, error: 'missing-file' }, 400)
+              return
+            }
+            const full = resolve(repo, file).replace(/\\/g, '/')
+            const base = repo.replace(/\\/g, '/')
+            if (full !== base && !full.startsWith(base + '/')) {
+              sendJson({ ok: false, error: 'path-outside-repo' }, 400)
+              return
+            }
+            if (staged === 'untracked') {
+              let st
+              try { st = statSync(full) } catch {
+                sendJson({ ok: false, error: 'file-not-found', file }, 404)
+                return
+              }
+              if (!st.isFile()) {
+                sendJson({ ok: true, isDir: true, content: '' })
+                return
+              }
+              let content = ''
+              try { content = readFileSync(full, 'utf8') } catch (err) {
+                sendJson({ ok: false, error: String((err && err.message) || err) }, 500)
+                return
+              }
+              if (content.includes('\0')) {
+                sendJson({ ok: true, binary: true, content: '' })
+                return
+              }
+              const truncated = content.length > MAX_DIFF_CHARS
+              sendJson({ ok: true, content: truncated ? content.slice(0, MAX_DIFF_CHARS) : content, truncated })
+              return
+            }
+            const paths = [file]
+            const old = url.searchParams.get('old')
+            if (old) paths.push(old)
+            const args = (staged === '1'
+              ? ['diff', '--cached', '--no-color', '--', ...paths]
+              : ['diff', '--no-color', '--', ...paths])
+            const out = await runGit(repo, args).catch(() => '')
+            const truncated = out.length > MAX_DIFF_CHARS
+            sendJson({ ok: true, diff: truncated ? out.slice(0, MAX_DIFF_CHARS) : out, truncated })
             break
           }
           case 'show': {
@@ -301,19 +411,6 @@ export function apply(ctx, config = {}) {
             }
             const truncated = out.length > MAX_DIFF_CHARS
             sendJson({ ok: true, file, diff: truncated ? out.slice(0, MAX_DIFF_CHARS) : out, truncated })
-            break
-          }
-          case 'workdir': {
-            // Uncommitted changes: staged + unstaged patches + untracked file names.
-            const staged = await runGit(repo, ['diff', '--cached', '--no-color']).catch(() => '')
-            const unstaged = await runGit(repo, ['diff', '--no-color']).catch(() => '')
-            const untracked = await runGit(repo, ['ls-files', '--others', '--exclude-standard']).catch(() => '')
-            sendJson({ ok: true, staged, unstaged, untracked })
-            break
-          }
-          case 'listdir': {
-            // (moved above the repo check) — kept unreachable for safety
-            sendJson({ ok: false, error: 'unknown-op' }, 400)
             break
           }
           default:

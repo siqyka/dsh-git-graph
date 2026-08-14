@@ -65,60 +65,7 @@
   header input#searchBox::placeholder { color: var(--text3); }
   /* filter menu lives in .filterWrap; the old select rule is removed */
   .filterWrap { position: relative; }
-  /* mode switch */
-  .modeWrap { display: inline-flex; gap: 4px; }
-  .modeBtn {
-    height: 28px; padding: 0 10px;
-    border: 1px solid var(--border); border-radius: 7px;
-    background: var(--bg3); color: var(--text2);
-    cursor: pointer; font-size: 12px; white-space: nowrap;
-  }
-  .modeBtn:hover { background: var(--bg4); }
-  .modeBtn.on { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,.1); }
-  /* directory picker modal */
-  #dirModal {
-    display: none; position: fixed; inset: 0; z-index: 50;
-    background: rgba(0,0,10,.55); align-items: center; justify-content: center;
-  }
-  #dirModal.show { display: flex; }
-  #dirBox {
-    width: min(560px, 92%); max-height: 82%;
-    background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
-    display: flex; flex-direction: column; overflow: hidden;
-    box-shadow: 0 14px 48px rgba(0,0,0,.55);
-  }
-  #dirBox .dm-head {
-    padding: 10px 14px; border-bottom: 1px solid var(--border);
-    display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px;
-  }
-  #dirBox .dm-head .sp { flex: 1; }
-  #dirBox .dm-path { display: flex; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
-  #dirBox .dm-path input {
-    flex: 1; height: 30px; border: 1px solid var(--border); border-radius: 7px;
-    background: var(--bg); color: var(--text); padding: 0 10px; font-size: 12px; outline: none;
-  }
-  #dirBox .dm-path input:focus { border-color: var(--accent); }
-  #dirBox .dm-list { flex: 1; overflow: auto; padding: 6px; min-height: 180px; }
-  #dirBox .dm-item {
-    display: flex; align-items: center; gap: 9px;
-    padding: 6px 10px; border-radius: 7px; cursor: pointer; font-size: 12.5px;
-  }
-  #dirBox .dm-item:hover { background: var(--bg4); }
-  #dirBox .dm-item .dm-ico { flex: none; color: var(--text3); width: 18px; text-align: center; }
-  #dirBox .dm-item .dm-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #dirBox .dm-item .dm-git { flex: none; font-size: 10px; font-weight: 700; color: var(--green); }
-  #dirBox .dm-foot {
-    padding: 10px 14px; border-top: 1px solid var(--border);
-    display: flex; align-items: center; gap: 8px;
-  }
-  #dirBox .dm-foot .dm-cur { flex: 1; min-width: 0; font-size: 11px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #dirBox button {
-    height: 28px; padding: 0 14px; border: 1px solid var(--border); border-radius: 7px;
-    background: var(--bg3); color: var(--text); cursor: pointer; font-size: 12px;
-  }
-  #dirBox button:hover { background: var(--bg4); }
-  #dirBox button.primary { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,.1); }
-  #dirBox .dm-err { color: var(--red); font-size: 11.5px; padding: 4px 14px 0; }
+  /* directory picker removed (manual repo selection dropped) */
   #btnFilter {
     height: 28px; padding: 0 10px;
     border: 1px solid var(--border); border-radius: 7px;
@@ -149,7 +96,6 @@
   #filterMenu label input { accent-color: var(--accent); cursor: pointer; }
   #filterMenu label .fm-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
   #filterMenu .fm-hint { font-size: 10.5px; color: var(--text3); padding: 4px 8px 2px; }
-  #btnBranches { display: none; }
   header button {
     height: 28px; padding: 0 12px;
     border: 1px solid var(--border); border-radius: 7px;
@@ -344,36 +290,77 @@
   .sf-diff-close { cursor: pointer; color: var(--text2); }
   .sf-diff-close:hover { color: var(--text); }
   .sf-diff-block pre.diff { border: 0; border-radius: 0; margin: 0; max-height: 340px; }
-  /* --- status modal --- */
+  /* --- workdir modal (VSCode-style changes) --- */
   #modalMask {
     position: absolute; inset: 0; z-index: 20; display: none;
     background: rgba(0,0,10,.5); align-items: center; justify-content: center;
   }
   #modalMask.show { display: flex; }
   #modal {
-    width: min(640px, 90%); max-height: 80%;
+    width: min(680px, 92%); max-height: 84%;
     background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
     display: flex; flex-direction: column; overflow: hidden;
     box-shadow: 0 12px 40px rgba(0,0,0,.5);
   }
   #modal .mhead {
-    padding: 12px 16px; border-bottom: 1px solid var(--border);
-    display: flex; align-items: center; font-weight: 700; font-size: 13.5px;
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 13.5px;
   }
+  #modal .mhead .mcount { font-weight: 600; font-size: 11.5px; color: var(--text2); }
   #modal .mhead .sp { flex: 1; }
-  #modal .mbody { padding: 12px 16px; overflow: auto; font-size: 12.5px; }
-  #modal .mbody .st-block { margin-bottom: 12px; }
-  #modal .mbody .st-title { font-weight: 700; color: var(--text2); font-size: 11.5px; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .3px; }
-  #modal pre.st-pre {
-    margin: 0; padding: 8px 10px; background: var(--bg);
-    border: 1px solid var(--border); border-radius: 7px;
-    font: 11.5px/1.55 Consolas, monospace; color: var(--text);
-    white-space: pre; overflow: auto; max-height: 260px;
+  #modal .mhead button {
+    height: 26px; padding: 0 12px; border: 1px solid var(--border);
+    background: var(--bg3); color: var(--text); border-radius: 7px;
+    cursor: pointer; font-size: 12px;
+  }
+  #modal .mhead button:hover { border-color: var(--text3); background: var(--bg4); }
+  #modal .mbody { padding: 8px 10px; overflow: auto; font-size: 12.5px; }
+  #modal .wd-empty { color: var(--text3); text-align: center; padding: 28px 0 20px; }
+  #modal .wd-group { margin-bottom: 6px; }
+  #modal .wd-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 8px; font-size: 11px; font-weight: 700;
+    color: var(--text2); text-transform: uppercase; letter-spacing: .3px;
+  }
+  #modal .wd-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 8px 4px 12px; border-radius: 6px; cursor: pointer;
+  }
+  #modal .wd-row:hover { background: var(--bg4); }
+  #modal .wd-row.open { background: var(--bg3); }
+  #modal .wd-badge {
+    flex: none; width: 20px; height: 20px; border-radius: 5px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 10.5px; font-weight: 800; font-family: Consolas, monospace;
+  }
+  #modal .wd-badge.A { background: rgba(63,185,80,.18); color: var(--green); }
+  #modal .wd-badge.M { background: rgba(240,136,62,.16); color: var(--orange); }
+  #modal .wd-badge.D { background: rgba(248,81,73,.16); color: var(--red); }
+  #modal .wd-badge.R { background: rgba(188,140,255,.16); color: #bc8cff; }
+  #modal .wd-badge.U { background: rgba(210,153,34,.16); color: var(--yellow); }
+  #modal .wd-badge.q { background: rgba(154,167,180,.16); color: var(--text2); }
+  #modal .wd-path {
+    flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-family: Consolas, monospace; font-size: 12px;
+  }
+  #modal .wd-old { color: var(--text3); text-decoration: line-through; }
+  #modal .wd-counts { flex: none; font-size: 11px; font-family: Consolas, monospace; }
+  #modal .wd-counts .add { color: var(--green); }
+  #modal .wd-counts .del { color: var(--red); }
+  #modal .wd-binary { flex: none; font-size: 10px; color: var(--text3); }
+  #modal .wd-diff { display: none; }
+  #modal .wd-row.open .wd-diff { display: block; }
+  #modal .wd-diff pre {
+    margin: 6px 0 4px; padding: 10px 12px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    overflow: auto; font: 11.5px/1.6 Consolas, "Courier New", monospace;
+    color: var(--text); white-space: pre; max-height: 420px;
   }
   #modal .mclose {
     border: 1px solid var(--border); background: var(--bg3); color: var(--text);
     border-radius: 7px; padding: 4px 14px; cursor: pointer; font-size: 12px;
   }
+  #modal .mclose:hover { border-color: var(--text3); background: var(--bg4); }
   /* --- status line --- */
   #statusLine {
     height: 32px; flex: none;
@@ -436,11 +423,6 @@
   .es-title { font-size: 15px; font-weight: 600; color: var(--text); }
   .es-sub { font-size: 12.5px; line-height: 1.8; max-width: 420px; }
   .es-path { font-size: 11.5px; color: var(--text2); word-break: break-all; max-width: 460px; opacity: .85; }
-  .es-btn {
-    margin-top: 8px; padding: 8px 18px; border-radius: 8px; cursor: pointer; font-size: 13px;
-    border: 1px solid var(--bg4); background: var(--bg3); color: var(--text);
-  }
-  .es-btn:hover { border-color: var(--accent); color: var(--accent); }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -451,10 +433,6 @@
   <span class="title">Git 图谱</span>
   <span class="repo" id="repoLabel" title=""></span>
   <span class="spacer"></span>
-  <div class="modeWrap">
-    <button id="btnModeFollow" class="modeBtn" title="显示当前对话工作区的 git 仓库（切换对话自动切换）">📍 当前区域</button>
-    <button id="btnModeManual" class="modeBtn" title="手动选择任意文件夹查看 git 仓库（切换对话不改变）">📁 手动选择</button>
-  </div>
   <input id="searchBox" type="text" placeholder="搜索提交（消息/作者/哈希）…">
   <span id="searchCount"></span>
   <div class="filterWrap">
@@ -478,9 +456,8 @@
     <div id="emptyState" class="hidden">
       <div class="es-ico">🗂️</div>
       <div class="es-title">当前对话区域不是 Git 仓库</div>
-      <div class="es-sub">该对话的工作区没有 git 仓库，图谱不显示。<br>点击下方按钮可手动选择任意文件夹的 git 仓库：</div>
+      <div class="es-sub">该对话的工作区没有 git 仓库，图谱不显示。</div>
       <div class="es-path" id="emptyPath"></div>
-      <button id="btnGoManual" class="es-btn">📁 手动选择文件夹</button>
     </div>
     <div id="commitList"></div>
   </div>
@@ -496,23 +473,8 @@
 <div id="ctxMenu"></div>
 <div id="modalMask">
   <div id="modal">
-    <div class="mhead"><span>工作区状态</span><span class="sp"></span><button class="mclose" id="mClose">关闭</button></div>
+    <div class="mhead"><span id="mHeadTitle">未提交改动</span><span class="mcount" id="mCount"></span><span class="sp"></span><button class="mclose" id="mRefresh">↻ 刷新</button><button class="mclose" id="mClose">关闭</button></div>
     <div class="mbody" id="mBody"></div>
-  </div>
-</div>
-<div id="dirModal">
-  <div id="dirBox">
-    <div class="dm-head"><span>选择 Git 仓库文件夹</span><span class="sp"></span><button id="dmClose">✕</button></div>
-    <div class="dm-path">
-      <input id="dmPath" type="text" placeholder="输入或粘贴文件夹路径，回车浏览…">
-      <button id="dmGo">浏览</button>
-    </div>
-    <div class="dm-list" id="dmList"></div>
-    <div class="dm-err" id="dmErr"></div>
-    <div class="dm-foot">
-      <span class="dm-cur" id="dmCur"></span>
-      <button id="dmPick" class="primary">选择此文件夹</button>
-    </div>
   </div>
 </div>
 <script>
@@ -521,7 +483,8 @@
 let REPO = null;
 let COMMITS = [];          // [{hash, parents[], author, email, date, subject, refs[]}]
 let BRANCHES = [];         // [{refname, kind, name, sha, head}]
-let STATUS = null;         // {porcelain, stagedStat, unstagedStat}
+let WORKSTATUS = null;     // {branch, staged[], unstaged[], untracked[], counts}
+let wdDiffCache = new Map(); // workfile cache: "staged\0path" -> display text
 let SELECTED = null;
 let SEARCH = "";
 let FILTER = "all";        // "all" | "multi"
@@ -727,6 +690,7 @@ const CHECKED_SET = new Set(); // branch shas kept visible when FILTER === "mult
 function visibleSet() {
   if (FILTER === "all") return null;
   if (FILTER === "multi") {
+    // 严格语义：只显示「已勾选分支」可达的提交；全部不勾选 → 空列表（不回落全显）
     const union = new Set();
     for (const b of BRANCHES) {
       if (b.kind === "tag") continue;
@@ -735,7 +699,7 @@ function visibleSet() {
         for (const h of s) union.add(h);
       }
     }
-    return union.size ? union : null;
+    return union;
   }
   return reachable(FILTER);
 }
@@ -833,6 +797,14 @@ function render() {
     const row = commitRows[i];
     if (i === 0) row.classList.add("first");
     if (commitRows.length === 1) row.classList.add("solo");
+  }
+
+  // strict filter: every branch unchecked -> empty list with a hint
+  if (vis && vis.size === 0) {
+    const hint = document.createElement("div");
+    hint.style.cssText = "color:var(--text3);text-align:center;padding:26px 0 18px;font-size:12.5px";
+    hint.textContent = "未选择任何分支 —— 在 ☑ 分支过滤 中勾选要显示的分支";
+    list.appendChild(hint);
   }
 
   renderLegend();
@@ -1192,68 +1164,161 @@ async function showFileDiff(hash, file, rowEl) {
   }
 }
 
-/* ===================== status modal ===================== */
+/* ===================== workdir modal (VSCode-style) ===================== */
 async function openStatus() {
   const mb = $("mBody");
   mb.innerHTML = "";
   const loading = document.createElement("div");
-  loading.className = "empty";
-  loading.textContent = "加载工作区 diff…";
+  loading.className = "wd-empty";
+  loading.textContent = "加载工作区状态…";
   mb.appendChild(loading);
   $("modalMask").classList.add("show");
   try {
-    const wd = await api("workdir");
-    mb.innerHTML = "";
-    const mk = (title, text, extra) => {
-      const block = document.createElement("div");
-      block.className = "st-block";
-      const t = document.createElement("div");
-      t.className = "st-title";
-      t.textContent = title;
-      block.appendChild(t);
-      const pre = document.createElement("pre");
-      pre.className = "st-pre";
-      pre.textContent = text || "（无）";
-      block.appendChild(pre);
-      if (extra) block.appendChild(extra);
-      mb.appendChild(block);
-    };
-    if (STATUS && STATUS.porcelain) mk("未提交文件（porcelain）", STATUS.porcelain);
-    if (wd.ok) {
-      mk("已暂存 diff（git diff --cached）", wd.staged);
-      mk("未暂存 diff（git diff）", wd.unstaged);
-      if (wd.untracked && wd.untracked.trim()) {
-        mk("未跟踪文件", wd.untracked.trim());
-      }
-    } else {
-      mk("工作区 diff", "加载失败: " + (wd.error || "?"));
-    }
+    const ws = await api("workstatus");
+    if (!ws.ok) { mb.textContent = "加载失败: " + (ws.error || "?"); return; }
+    WORKSTATUS = ws;
+    renderWorkdir();
   } catch (err) {
     mb.textContent = "加载失败: " + err.message;
   }
 }
+
+function renderWorkdir() {
+  const mb = $("mBody");
+  mb.innerHTML = "";
+  const ws = WORKSTATUS;
+  $("mCount").textContent = `已暂存 ${ws.counts.staged} · 更改 ${ws.counts.unstaged} · 未跟踪 ${ws.counts.untracked}`;
+
+  const total = ws.counts.staged + ws.counts.unstaged + ws.counts.untracked;
+  if (!total) {
+    const empty = document.createElement("div");
+    empty.className = "wd-empty";
+    empty.textContent = "✓ 工作区干净";
+    mb.appendChild(empty);
+    return;
+  }
+
+  const groups = [
+    { title: "已暂存", items: ws.staged, staged: "1" },
+    { title: "更改", items: ws.unstaged, staged: "0" },
+    { title: "未跟踪", items: ws.untracked.map((f) => ({ path: f.path, code: "?" })), staged: "untracked" }
+  ];
+  for (const g of groups) {
+    if (!g.items.length) continue;
+    const wrap = document.createElement("div");
+    wrap.className = "wd-group";
+    const gh = document.createElement("div");
+    gh.className = "wd-head";
+    gh.appendChild(document.createTextNode(g.title));
+    const gn = document.createElement("span");
+    gn.className = "wd-n";
+    gn.textContent = "(" + g.items.length + ")";
+    gh.appendChild(gn);
+    wrap.appendChild(gh);
+    for (const it of g.items) {
+      const row = document.createElement("div");
+      row.className = "wd-row";
+      const badge = document.createElement("span");
+      badge.className = "wd-badge " + (it.code === "?" ? "q" : it.code);
+      badge.textContent = it.code === "?" ? "?" : it.code;
+      row.appendChild(badge);
+      const path = document.createElement("span");
+      path.className = "wd-path";
+      path.textContent = it.path;
+      path.title = (it.oldPath ? it.oldPath + " → " : "") + it.path;
+      if (it.oldPath) {
+        const old = document.createElement("span");
+        old.className = "wd-old";
+        old.textContent = "  ← " + it.oldPath;
+        path.appendChild(old);
+      }
+      row.appendChild(path);
+      if (it.code !== "?" && it.binary) {
+        const b = document.createElement("span");
+        b.className = "wd-binary";
+        b.textContent = "二进制";
+        row.appendChild(b);
+      } else if (it.code !== "?") {
+        const c = document.createElement("span");
+        c.className = "wd-counts";
+        const a = document.createElement("span");
+        a.className = "add";
+        a.textContent = "+" + (it.added ?? 0);
+        const d = document.createElement("span");
+        d.className = "del";
+        d.textContent = "−" + (it.deleted ?? 0);
+        c.appendChild(a);
+        c.appendChild(document.createTextNode("  "));
+        c.appendChild(d);
+        row.appendChild(c);
+      }
+      const diffBox = document.createElement("div");
+      diffBox.className = "wd-diff";
+      const pre = document.createElement("pre");
+      pre.textContent = "加载中…";
+      diffBox.appendChild(pre);
+      row.appendChild(diffBox);
+      row.addEventListener("click", () => {
+        const open = row.classList.contains("open");
+        if (open) { row.classList.remove("open"); return; }
+        row.classList.add("open");
+        loadWdFile(it, g.staged, pre);
+      });
+      wrap.appendChild(row);
+    }
+    mb.appendChild(wrap);
+  }
+}
+
+/** Load one file's diff (or content for untracked) on demand; cached. */
+async function loadWdFile(item, staged, pre) {
+  const key = staged + "\u0000" + item.path;
+  const cached = wdDiffCache.get(key);
+  if (cached) { pre.textContent = cached; return; }
+  try {
+    const res = await api("workfile", { file: item.path, staged, ...(item.oldPath ? { old: item.oldPath } : {}) });
+    let text;
+    if (!res.ok) {
+      text = "加载失败: " + (res.error || "?");
+    } else if (res.isDir) {
+      text = "（未跟踪目录）";
+    } else if (res.binary) {
+      text = "（二进制文件，不显示内容）";
+    } else if (res.content !== undefined) {
+      text = res.content.trim() ? res.content : "（空文件）";
+      if (res.truncated) text = "（内容过长已截断）\n" + text;
+    } else {
+      text = res.diff || "（无差异）";
+      if (res.truncated) text = "（diff 过长已截断）\n" + text;
+    }
+    wdDiffCache.set(key, text);
+    pre.textContent = text;
+  } catch (err) {
+    pre.textContent = "加载失败: " + err.message;
+  }
+}
+
 $("mClose").addEventListener("click", () => $("modalMask").classList.remove("show"));
+$("mRefresh").addEventListener("click", openStatus);
 $("modalMask").addEventListener("click", (ev) => { if (ev.target === $("modalMask")) $("modalMask").classList.remove("show"); });
 
 /* ===================== status line ===================== */
 async function loadStatus() {
   try {
-    const st = await api("status");
-    const lines = st.porcelain ? st.porcelain.split("\n").filter(Boolean) : [];
-    const tracked = lines.filter((l) => !l.startsWith("## ")).length;
-    const branch = lines.find((l) => l.startsWith("## ")) || "";
-    const bname = branch.replace(/^## /, "").split(" ")[0] || "";
-    STATUS = { ...st, porcelainLines: lines.filter((l) => !l.startsWith("## ")), dirtyCount: tracked };
+    const ws = await api("workstatus");
+    if (!ws.ok) return;
+    WORKSTATUS = ws;
     const el = $("statusLine");
     el.innerHTML = "";
     const b = document.createElement("span");
     b.className = "branch";
-    b.textContent = "分支: " + (bname || "?");
+    b.textContent = "分支: " + (ws.branch || "?");
     el.appendChild(b);
-    if (tracked > 0) {
+    const total = ws.counts.staged + ws.counts.unstaged + ws.counts.untracked;
+    if (total > 0) {
       const dirty = document.createElement("span");
       dirty.className = "dirty";
-      dirty.textContent = "◌ 未提交改动 " + tracked + " 项";
+      dirty.textContent = `◌ 未提交改动：已暂存 ${ws.counts.staged} · 更改 ${ws.counts.unstaged} · 未跟踪 ${ws.counts.untracked}`;
       dirty.addEventListener("click", openStatus);
       el.appendChild(dirty);
     } else {
@@ -1262,22 +1327,12 @@ async function loadStatus() {
       clean.textContent = "✓ 工作区干净";
       el.appendChild(clean);
     }
-    render();
   } catch { /* ignore */ }
 }
 
 /* ===================== load ===================== */
 const SID_PARAM = new URLSearchParams(location.search).get("sid") || ""; // hosting session id
 let SESSION_WS = ""; // resolved workspace path of the hosting session
-
-/** Mode: 'follow' (session workspace) or 'manual' (user-picked folder). Persisted. */
-let MODE = "follow";
-let MANUAL_PATH = "";
-try {
-  const savedMode = localStorage.getItem("gg-mode");
-  if (savedMode === "follow" || savedMode === "manual") MODE = savedMode;
-  MANUAL_PATH = localStorage.getItem("gg-manual-path") || "";
-} catch { /* ignore */ }
 
 /** Resolve the hosting session's cwd via the DSH internal session.list RPC. */
 async function resolveSessionWs() {
@@ -1295,13 +1350,7 @@ async function resolveSessionWs() {
   } catch { return ""; }
 }
 
-function applyModeUI() {
-  $("btnModeFollow").classList.toggle("on", MODE === "follow");
-  $("btnModeManual").classList.toggle("on", MODE === "manual");
-  $("btnModeManual").title = MODE === "manual" && MANUAL_PATH ? "手动选择：" + MANUAL_PATH : "手动选择任意文件夹查看 git 仓库（切换对话不改变）";
-}
-
-/** 当前区域模式下，当前对话不是 git 仓库：显示空态，不显示图谱。 */
+/** 当前对话不是 git 仓库：显示空态，不显示图谱。 */
 function showEmpty(ws) {
   $("loading").classList.add("hidden");
   const notice = $("wsNotice");
@@ -1326,54 +1375,35 @@ async function load() {
   $("loading").classList.remove("hidden");
   hideEmpty();
   try {
-    let ws = "";
-    if (MODE === "follow") {
-      if (!SESSION_WS) SESSION_WS = await resolveSessionWs();
-      ws = SESSION_WS;
-    } else {
-      ws = MANUAL_PATH;
-    }
+    if (!SESSION_WS) SESSION_WS = await resolveSessionWs();
+    const ws = SESSION_WS;
     const repos = await api("repos", ws ? { ws } : {});
     if (!repos.ok || !repos.repos.length) {
       $("loading").textContent = "未配置仓库：请在 cordis.patch.yml 的 git-graph config.repo 中填写仓库路径";
       return;
     }
-    // 当前区域模式：当前对话的目录不是 git 仓库 → 不显示图谱（不回落配置仓库）
-    if (MODE === "follow" && SESSION_WS && !repos.wsIsGit) {
+    // 当前对话的目录不是 git 仓库 → 不显示图谱（不回落配置仓库）
+    if (SESSION_WS && !repos.wsIsGit) {
       showEmpty(SESSION_WS);
       return;
     }
     REPO = repos.current || repos.repos[0];
-    // notice logic
+    // notice: show the resolved repo root
     const notice = $("wsNotice");
     notice.style.borderColor = ""; notice.style.color = ""; notice.style.background = "";
-    if (MODE === "manual") {
-      if (ws && !repos.wsIsGit) {
-        notice.textContent = `⚠ 所选文件夹不是 git 仓库（${ws}），已显示配置仓库：${REPO}`;
-        notice.classList.add("show");
-      } else if (ws && repos.wsIsGit) {
-        notice.textContent = `◉ 手动选择：${repos.wsRoot || REPO}`;
-        notice.classList.add("show");
-        notice.style.borderColor = "var(--green)"; notice.style.color = "var(--green)"; notice.style.background = "rgba(63,185,80,.08)";
-      } else {
-        notice.classList.remove("show");
-      }
+    if (SESSION_WS && repos.wsRoot && repos.wsRoot !== SESSION_WS) {
+      notice.textContent = `◉ 已从当前对话区域向上定位到仓库根：${repos.wsRoot}`;
+      notice.classList.add("show");
+      notice.style.borderColor = "var(--green)"; notice.style.color = "var(--green)"; notice.style.background = "rgba(63,185,80,.08)";
+    } else if (SESSION_WS && repos.wsRoot) {
+      notice.textContent = `◉ 当前区域：${repos.wsRoot}`;
+      notice.classList.add("show");
+      notice.style.borderColor = "var(--green)"; notice.style.color = "var(--green)"; notice.style.background = "rgba(63,185,80,.08)";
     } else {
-      if (SESSION_WS && repos.wsRoot && repos.wsRoot !== SESSION_WS) {
-        notice.textContent = `◉ 已从当前对话区域向上定位到仓库根：${repos.wsRoot}`;
-        notice.classList.add("show");
-        notice.style.borderColor = "var(--green)"; notice.style.color = "var(--green)"; notice.style.background = "rgba(63,185,80,.08)";
-      } else if (SESSION_WS && repos.wsRoot) {
-        notice.textContent = `◉ 当前区域：${repos.wsRoot}`;
-        notice.classList.add("show");
-        notice.style.borderColor = "var(--green)"; notice.style.color = "var(--green)"; notice.style.background = "rgba(63,185,80,.08)";
-      } else {
-        notice.classList.remove("show");
-      }
+      notice.classList.remove("show");
     }
     $("repoLabel").textContent = REPO;
     $("repoLabel").title = REPO;
-    applyModeUI();
     const [graph, branches] = await Promise.all([api("graph"), api("branches")]);
     if (!graph.ok) { $("loading").textContent = "加载失败: " + (graph.error || "?"); return; }
     COMMITS = graph.commits;
@@ -1394,108 +1424,6 @@ async function load() {
     $("loading").classList.add("hidden");
   }
 }
-
-/* ---- mode switching ---- */
-$("btnModeFollow").addEventListener("click", () => {
-  MODE = "follow";
-  try { localStorage.setItem("gg-mode", "follow"); } catch { /* ignore */ }
-  applyModeUI();
-  load();
-});
-$("btnModeManual").addEventListener("click", () => {
-  MODE = "manual";
-  try { localStorage.setItem("gg-mode", "manual"); } catch { /* ignore */ }
-  applyModeUI();
-  if (MANUAL_PATH) load();
-  else openDirPicker();
-});
-$("btnGoManual").addEventListener("click", () => {
-  MODE = "manual";
-  try { localStorage.setItem("gg-mode", "manual"); } catch { /* ignore */ }
-  applyModeUI();
-  openDirPicker();
-});
-
-/* ---- directory picker (manual mode) ---- */
-function openDirPicker() {
-  $("dirModal").classList.add("show");
-  $("dmErr").textContent = "";
-  const start = MANUAL_PATH || SESSION_WS || "D:/";
-  $("dmPath").value = start;
-  browseDir(start);
-}
-function closeDirPicker() { $("dirModal").classList.remove("show"); }
-$("dmClose").addEventListener("click", closeDirPicker);
-$("dirModal").addEventListener("click", (ev) => { if (ev.target === $("dirModal")) closeDirPicker(); });
-
-async function browseDir(path) {
-  $("dmErr").textContent = "";
-  const list = $("dmList");
-  list.innerHTML = "";
-  const loading = document.createElement("div");
-  loading.className = "dm-item";
-  loading.textContent = "加载中…";
-  list.appendChild(loading);
-  try {
-    const res = await api("listdir", { path });
-    if (!res.ok) { $("dmErr").textContent = res.error || "无法读取目录"; $("dmCur").textContent = path; list.innerHTML = ""; return; }
-    $("dmPath").value = res.path;
-    $("dmCur").textContent = res.path;
-    list.innerHTML = "";
-    // parent
-    const parent = parentPath(res.path);
-    if (parent !== res.path) {
-      const up = document.createElement("div");
-      up.className = "dm-item";
-      up.innerHTML = '<span class="dm-ico">📁</span><span class="dm-name">..</span>';
-      up.addEventListener("click", () => browseDir(parent));
-      list.appendChild(up);
-    }
-    for (const e of res.entries) {
-      if (!e.isDir) continue;
-      const item = document.createElement("div");
-      item.className = "dm-item";
-      const ico = document.createElement("span");
-      ico.className = "dm-ico";
-      ico.textContent = "📁";
-      item.appendChild(ico);
-      const name = document.createElement("span");
-      name.className = "dm-name";
-      name.textContent = e.name;
-      item.appendChild(name);
-      if (e.isGit) {
-        const git = document.createElement("span");
-        git.className = "dm-git";
-        git.textContent = "● git";
-        item.appendChild(git);
-      }
-      item.addEventListener("click", () => browseDir(joinPath(res.path, e.name)));
-      list.appendChild(item);
-    }
-  } catch (err) {
-    $("dmErr").textContent = err.message;
-    list.innerHTML = "";
-  }
-}
-function parentPath(p) {
-  const norm = p.replace(/\\/g, "/").replace(/\/+$/, "");
-  const i = norm.lastIndexOf("/");
-  if (i <= 0) return norm;
-  return norm.slice(0, i) || "/";
-}
-function joinPath(a, b) {
-  const base = a.replace(/\\/g, "/").replace(/\/+$/, "");
-  return base + "/" + b;
-}
-$("dmGo").addEventListener("click", () => browseDir($("dmPath").value.trim() || "D:/"));
-$("dmPath").addEventListener("keydown", (ev) => { if (ev.key === "Enter") browseDir($("dmPath").value.trim() || "D:/"); });
-$("dmPick").addEventListener("click", () => {
-  const p = $("dmCur").textContent || $("dmPath").value.trim();
-  MANUAL_PATH = p;
-  try { localStorage.setItem("gg-manual-path", p); } catch { /* ignore */ }
-  closeDirPicker();
-  load();
-});
 
 /* ---- branch checkbox filter ---- */
 function fillFilterMenu() {
