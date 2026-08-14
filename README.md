@@ -6,6 +6,8 @@ DeepSeek Harness（DSH）Web GUI 的嵌入式 Git 仓库图谱可视化插件。
 
 在对话界面里直接查看、浏览、管理 git 仓库：提交历史图、分支过滤、提交详情、文件 diff、工作区状态、右键 git 操作，全部内嵌在 harness 界面中，无需离开当前对话。
 
+> 🛠 本项目由 AI 辅助开发（AI-assisted development）。
+
 ![Git 图谱](https://img.shields.io/badge/DSH-Plugin-58a6ff)
 
 ## ✨ 功能

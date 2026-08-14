@@ -4,6 +4,8 @@ An embedded git repository graph visualizer for the DeepSeek Harness (DSH) Web G
 
 View, browse and manage git repositories right inside the harness conversation — commit history graph, branch filtering, commit details, file diffs and working-tree changes, all embedded in the interface without leaving the current session.
 
+> 🛠 This plugin is developed with AI assistance.
+
 ![Git 图谱](https://img.shields.io/badge/DSH-Plugin-58a6ff)
 
 ## ✨ Features
