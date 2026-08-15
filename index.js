@@ -4,7 +4,7 @@
 //   GET /git-graph/index.html                           -> the visualizer page
 // Commands are executed with execFile (no shell), fixed argument lists only.
 import { execFile } from 'node:child_process'
-import { readFileSync, statSync } from 'node:fs'
+import { appendFileSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -17,9 +17,11 @@ const MAX_DIFF_CHARS = 240000
 export const name = 'git-graph'
 export const inject = ['webServer']
 
-function runGit(repo, args, maxBuffer = MAX_GIT_BUFFER) {
+function runGit(repo, args, maxBuffer = MAX_GIT_BUFFER, timeoutMs = 0) {
   return new Promise((resolve, reject) => {
-    execFile('git', ['-C', repo, ...args], { maxBuffer, windowsHide: true }, (err, stdout, stderr) => {
+    const opts = { maxBuffer, windowsHide: true }
+    if (timeoutMs > 0) opts.timeout = timeoutMs
+    execFile('git', ['-C', repo, ...args], opts, (err, stdout, stderr) => {
       if (err) {
         const detail = (stderr || err.message || '').toString().trim()
         reject(new Error(detail || 'git failed'))
@@ -230,14 +232,20 @@ export function apply(ctx, config = {}) {
           case 'graph': {
             const headOut = await runGit(repo, ['symbolic-ref', '-q', '--short', 'HEAD']).catch(() => '')
             const headName = headOut.trim() || 'HEAD'
-            const log = await runGit(repo, [
-              'log', '--all', '--topo-order', '--date=iso-strict',
-              '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%d',
-            ])
+            // Pagination: limit/skip for large repos; total from rev-list.
+            const limit = Math.max(0, Math.min(parseInt(url.searchParams.get('limit') || '0', 10) || 0, 2000))
+            const skip = Math.max(0, parseInt(url.searchParams.get('skip') || '0', 10) || 0)
+            const total = parseInt((await runGit(repo, ['rev-list', '--all', '--count']).catch(() => '0')).trim(), 10) || 0
+            const args = ['log', '--all', '--topo-order', '--date=iso-strict',
+              '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%d']
+            if (skip > 0) args.push('--skip=' + skip)
+            if (limit > 0) args.push('-n', String(limit))
+            const log = await runGit(repo, args)
             sendJson({
               ok: true,
               repo,
               head: headName,
+              total,
               commits: parseLog(log),
             })
             break
@@ -354,6 +362,280 @@ export function apply(ctx, config = {}) {
             const out = await runGit(repo, args).catch(() => '')
             const truncated = out.length > MAX_DIFF_CHARS
             sendJson({ ok: true, diff: truncated ? out.slice(0, MAX_DIFF_CHARS) : out, truncated })
+            break
+          }
+          case 'filelog': {
+            // Commit history of one file (--follow tracks renames).
+            const file = url.searchParams.get('file')
+            if (!file) {
+              sendJson({ ok: false, error: 'missing-file' }, 400)
+              return
+            }
+            const full = resolve(repo, file).replace(/\\/g, '/')
+            const base = repo.replace(/\\/g, '/')
+            if (full !== base && !full.startsWith(base + '/')) {
+              sendJson({ ok: false, error: 'path-outside-repo' }, 400)
+              return
+            }
+            const log = await runGit(repo, [
+              'log', '--follow', '--topo-order', '--date=iso-strict',
+              '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%d', '--', file,
+            ]).catch(() => '')
+            sendJson({ ok: true, file, commits: parseLog(log) })
+            break
+          }
+          case 'reveal': {
+            // Open the repo folder in the OS file manager (harmless convenience).
+            const opener = process.platform === 'win32' ? 'explorer'
+              : process.platform === 'darwin' ? 'open'
+              : 'xdg-open'
+            await runGit(repo, ['rev-parse', '--show-toplevel']).then((root) => {
+              return new Promise((resolvePromise) => {
+                // GUI file managers may exit non-zero even on success; ignore the code.
+                execFile(opener, [root.trim()], { windowsHide: true }, () => resolvePromise())
+              })
+            })
+            sendJson({ ok: true })
+            break
+          }
+          case 'remoteinfo': {
+            // Resolve the origin remote to a web base URL (e.g. https://github.com/u/r)
+            // so the client can build "/commit/<hash>" links. Returns {web, remote} or
+            // {web: null} when no usable remote exists.
+            const urlOut = await runGit(repo, ['remote', 'get-url', 'origin']).catch(() => '')
+            const raw = urlOut.trim()
+            if (!raw) {
+              sendJson({ ok: true, web: null, remote: '' })
+              break
+            }
+            let web = raw
+            if (/^git@(.+):(.+)$/.test(raw)) {
+              // scp-like: git@host:path.git -> https://host/path
+              web = raw.replace(/^git@([^:]+):(.*)$/, 'https://$1/$2')
+            } else if (/^ssh:\/\//.test(raw)) {
+              web = raw.replace(/^ssh:\/\/([^@]+@)?/, 'https://')
+            }
+            // Drop the .git suffix and any trailing slash.
+            web = web.replace(/\.git\/?$/, '').replace(/\/+$/, '')
+            sendJson({ ok: true, web, remote: raw })
+            break
+          }
+          case 'suggestmsg': {
+            // Heuristic commit-message suggestion from the working-tree diff.
+            // No external AI call: builds conventional-commit style candidates
+            // from file names + add/del counts.
+            const stagedNum = await runGit(repo, ['diff', '--cached', '--numstat', '-z']).catch(() => '')
+            const unstagedNum = await runGit(repo, ['diff', '--numstat', '-z']).catch(() => '')
+            const statusOut = await runGit(repo, ['status', '--porcelain=v1', '-z']).catch(() => '')
+            const stagedCounts = parseNumstatZ(stagedNum)
+            const unstagedCounts = parseNumstatZ(unstagedNum)
+            const untracked = []
+            const staged = []
+            const unstaged = []
+            for (const r of parsePorcelainZ(statusOut)) {
+              if (r.x === '?' && r.y === '?') { untracked.push(r.path); continue }
+              if (r.x !== ' ' && r.x !== '?') staged.push(r.path)
+              if (r.y !== ' ' && r.y !== '?') unstaged.push(r.path)
+            }
+            const name = (p) => p.split('/').pop()
+            const files = [...staged, ...unstaged, ...untracked]
+            let ins = 0; let del = 0
+            for (const m of [stagedCounts, unstagedCounts]) {
+              for (const v of m.values()) {
+                ins += v.added === '-' ? 0 : parseInt(v.added, 10) || 0
+                del += v.deleted === '-' ? 0 : parseInt(v.deleted, 10) || 0
+              }
+            }
+            const candidates = []
+            const uniq = [...new Set(files)]
+            if (untracked.length && !staged.length && !unstaged.length) {
+              candidates.push(`feat: 新增 ${untracked.map(name).slice(0, 3).join('、')}${untracked.length > 3 ? ' 等' : ''}（${untracked.length} 个文件）`)
+            } else if (del >= ins && del > 0) {
+              candidates.push(`fix: 移除/精简 ${uniq.map(name).slice(0, 3).join('、')}${uniq.length > 3 ? ' 等' : ''}`)
+            } else if (uniq.length) {
+              candidates.push(`feat: 更新 ${uniq.map(name).slice(0, 3).join('、')}${uniq.length > 3 ? ' 等' : ''}`)
+            }
+            if (uniq.length) {
+              const names = uniq.map(name).slice(0, 5).join('、')
+              candidates.push(`chore: 调整 ${names}${uniq.length > 5 ? ` 等 ${uniq.length} 个文件` : ''}（+${ins} -${del}）`)
+            }
+            if (!uniq.length) candidates.push('chore: 清理/整理')
+            sendJson({
+              ok: true,
+              summary: { staged: staged.length, unstaged: unstaged.length, untracked: untracked.length, insertions: ins, deletions: del },
+              files: uniq,
+              candidates: candidates.slice(0, 3),
+            })
+            break
+          }
+          case 'gitop': {
+            // Working-tree write operations (stage/unstage/discard/commit).
+            // All file paths are validated to stay inside the repo; the client
+            // confirms destructive actions before calling.
+            const action = url.searchParams.get('action')
+            const files = url.searchParams.getAll('file').filter(Boolean)
+            const base = repo.replace(/\\/g, '/')
+            const okPath = (p) => {
+              const full = resolve(repo, p).replace(/\\/g, '/')
+              return full === base || full.startsWith(base + '/')
+            }
+            if (files.some((p) => !okPath(p))) {
+              sendJson({ ok: false, error: 'path-outside-repo' }, 400)
+              return
+            }
+            try {
+              switch (action) {
+                case 'stage':
+                  if (!files.length) throw new Error('missing-file')
+                  await runGit(repo, ['add', '--', ...files])
+                  break
+                case 'stage-all':
+                  await runGit(repo, ['add', '-A'])
+                  break
+                case 'unstage':
+                  if (!files.length) throw new Error('missing-file')
+                  await runGit(repo, ['restore', '--staged', '--', ...files])
+                  break
+                case 'unstage-all':
+                  // mixed reset: unstage everything, keep working tree
+                  await runGit(repo, ['reset'])
+                  break
+                case 'discard':
+                  // Restore file(s) to HEAD: staged + worktree changes are lost.
+                  if (!files.length) throw new Error('missing-file')
+                  await runGit(repo, ['restore', '--staged', '--worktree', '--', ...files])
+                  break
+                case 'discard-all':
+                  // Restore every tracked file to HEAD (untracked files untouched).
+                  await runGit(repo, ['restore', '--staged', '--worktree', '.'])
+                  break
+                case 'commit': {
+                  const message = url.searchParams.get('message')
+                  if (!message || !message.trim()) throw new Error('missing-message')
+                  if (files.length) {
+                    // selective commit: stage exactly these files and limit the
+                    // commit to them (paths are staged so `-- files` works).
+                    await runGit(repo, ['add', '--', ...files])
+                    await runGit(repo, ['commit', '-m', message.trim(), '--', ...files])
+                  } else {
+                    if (url.searchParams.get('all') === '1') {
+                      await runGit(repo, ['add', '-A'])
+                    }
+                    await runGit(repo, ['commit', '-m', message.trim()])
+                  }
+                  break
+                }
+                case 'ignore': {
+                  // Add files to .gitignore; tracked files are untracked first
+                  // (git rm --cached keeps them on disk).
+                  if (!files.length) throw new Error('missing-file')
+                  const tracked = []
+                  for (const f of files) {
+                    const out = await runGit(repo, ['ls-files', '--error-unmatch', '--', f]).catch(() => '')
+                    if (out.trim()) tracked.push(f)
+                  }
+                  if (tracked.length) {
+                    await runGit(repo, ['rm', '--cached', '--', ...tracked])
+                  }
+                  const gi = join(repo, '.gitignore')
+                  let lines = ''
+                  try { lines = readFileSync(gi, 'utf8') } catch { /* no .gitignore yet */ }
+                  const has = (p) => lines.split(/\r?\n/).some((l) => l.trim() === p)
+                  const adds = []
+                  for (const f of files) {
+                    const norm = f.replace(/\\/g, '/')
+                    if (!has(norm)) adds.push(norm)
+                  }
+                  if (adds.length) {
+                    const prefix = lines.length && !lines.endsWith('\n') ? '\n' : ''
+                    appendFileSync(gi, prefix + adds.join('\n') + '\n')
+                  }
+                  break
+                }
+                case 'tag': {
+                  // Lightweight tag on a commit (harmless; no editor, no push).
+                  const name = url.searchParams.get('name')
+                  const hash = url.searchParams.get('hash')
+                  if (!name || !name.trim()) throw new Error('missing-tag-name')
+                  if (!hash) throw new Error('missing-hash')
+                  await runGit(repo, ['tag', name.trim(), hash])
+                  break
+                }
+                case 'tag-delete': {
+                  // Delete a local tag (does not touch remotes).
+                  const name = url.searchParams.get('name')
+                  if (!name || !name.trim()) throw new Error('missing-tag-name')
+                  await runGit(repo, ['tag', '-d', name.trim()])
+                  break
+                }
+                case 'tag-rename': {
+                  // Rename a local tag: create the new name at the same commit,
+                  // then drop the old one (create-first keeps the tag if delete fails).
+                  const name = url.searchParams.get('name')
+                  const newname = url.searchParams.get('newname')
+                  const hash = url.searchParams.get('hash')
+                  if (!name || !name.trim()) throw new Error('missing-tag-name')
+                  if (!newname || !newname.trim()) throw new Error('missing-new-tag-name')
+                  if (!hash) throw new Error('missing-hash')
+                  await runGit(repo, ['tag', newname.trim(), hash])
+                  await runGit(repo, ['tag', '-d', name.trim()])
+                  break
+                }
+                case 'branch': {
+                  // Create a new lightweight branch at the given commit.
+                  const name = url.searchParams.get('name')
+                  const hash = url.searchParams.get('hash')
+                  if (!name || !name.trim()) throw new Error('missing-branch-name')
+                  if (!hash) throw new Error('missing-hash')
+                  // Reject names that would escape refs/heads (no slashes-injection guard needed:
+                  // git itself validates ref names, but keep a sane limit).
+                  await runGit(repo, ['branch', name.trim(), hash])
+                  break
+                }
+                case 'fetch': {
+                  // Pull remote refs into refs/remotes (no merge). Works with the
+                  // configured origin, or any remote if none named.
+                  await runGit(repo, ['fetch', '--all', '--prune'], MAX_GIT_BUFFER, 120000)
+                  break
+                }
+                case 'pull': {
+                  // Pull + merge the current branch from origin (may conflict; the
+                  // client warns before calling). Returns the pull summary.
+                  const branch = url.searchParams.get('branch')
+                  const out = await runGit(repo, ['pull', 'origin', branch || ''], MAX_GIT_BUFFER, 120000)
+                  sendJson({ ok: true, summary: String(out).trim() })
+                  return
+                }
+                case 'push': {
+                  // Push the current branch to origin. May require credentials;
+                  // non-fast-forward and auth errors come back as git stderr.
+                  const branch = url.searchParams.get('branch')
+                  const out = await runGit(repo, ['push', 'origin', branch || 'HEAD'], MAX_GIT_BUFFER, 120000)
+                  sendJson({ ok: true, summary: String(out).trim() })
+                  return
+                }
+                case 'checkout': {
+                  // Switch to a local branch (dirty worktree errors come from git).
+                  const name = url.searchParams.get('name')
+                  if (!name || !name.trim()) throw new Error('missing-branch-name')
+                  await runGit(repo, ['checkout', name.trim()])
+                  break
+                }
+                case 'delete-branch': {
+                  // Delete a local branch (-d: refuses unmerged branches).
+                  const name = url.searchParams.get('name')
+                  if (!name || !name.trim()) throw new Error('missing-branch-name')
+                  await runGit(repo, ['branch', '-d', name.trim()])
+                  break
+                }
+                default:
+                  sendJson({ ok: false, error: 'unknown-action' }, 400)
+                  return
+              }
+              sendJson({ ok: true })
+            } catch (err) {
+              sendJson({ ok: false, error: String((err && err.message) || err) }, 500)
+            }
             break
           }
           case 'show': {
