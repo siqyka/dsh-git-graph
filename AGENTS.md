@@ -41,6 +41,8 @@ dsh-git-graph 是 DeepSeek Harness (DSH) Web GUI 的嵌入式 Git 仓库图谱�
 | `reveal` | 在系统文件管理器中打开仓库目录 | — |
 | `remoteinfo` | origin 远程 → web 基址（`https://…`，SSH/scp 语法归一化），无远程返回 `web:null` | — |
 | `suggestmsg` | 依据工作区 diff 统计生成提交信息候选（启发式，无外部 AI 调用） | — |
+| `checkupdate` | 对比本地版本与 GitHub 最新 tag（`git ls-remote --tags`，复用 git 全局代理/sslBackend/version 配置），返回 `{current, latest, hasUpdate}` | — |
+| `autoupdate` | 一键自更新：`git clone --depth 1 --branch <tag>` 下载到临时目录 → 校验 `index.js`/`web/index.html` → 同级目录备份（`<插件目录>.bak-<ts>`，`pruneBackups` 保留最新 1 份）→ 清空并替换 → 需重启 dsh web 生效；失败自动回滚备份 | `tag` |
 | `show` / `diff` / `filediff` | 提交详情 / 完整补丁 / 单文件 diff | `hash`、`file` |
 
 ## 关键约定
@@ -52,6 +54,7 @@ dsh-git-graph 是 DeepSeek Harness (DSH) Web GUI 的嵌入式 Git 仓库图谱�
 - **状态记忆**：`loadStored/saveStored` 封装 localStorage；键统一 `gg2-` 前缀（v0.8 起）：`gg2-theme`、`gg2-wdshow`（分组开关）、`gg2-wdfolded`（面板折叠）、`gg2-wdgroupfolded`（组折叠）、`gg2-brfolded`（分支组折叠）、`gg2-bfilter`（分支过滤勾选 refnames，null=全选）；分支过滤按 refname 记忆（sha 会变）
 - **右键菜单**：无害操作（复制/查看详情/打标签/从提交新建分支/打开 GitHub 提交页/复制仓库路径/打开文件夹）；写操作走 `gitop`（tag / tag-delete / tag-rename / branch），`remoteinfo` 失败或无远程时 GitHub 项给出提示
 - **远程/分支操作**（v0.9）：顶栏 `⬇ 拉取`（`gitop fetch` = `git fetch --all --prune`）+ `⬆ 推送`（`gitop push` 当前分支，确认框「确认推送」）；分支组头右键菜单——本地分支：🔄 切换（`checkout`，有未提交改动时先确认）、⬆ 推送该分支、🗑️ 删除（`delete-branch`，`-d` 拒绝未合并分支，HEAD 分支禁止删除）；远程分支：⬇ 拉取、复制远程分支名。fetch/pull/push 用 120s 超时（`runGit` 第 4 参）；**远程组头始终生成**——chain 为空（无独有提交）时仍显示组头，标签区分「已同步」（tip 等于同名本地分支）与「已包含」（提交全部由其他组显示）
+- **自更新**（v0.10）：`load()` 后静默调 `checkForUpdate(true)`；有新版时顶栏显示 `🔄 新版本 vX.Y` 按钮（`#btnUpdate`），点击 → 确认框「发现新版本」→ `autoupdate` → 提示重启生效；手动点击按钮在无更新时提示已最新；版本号取自 `package.json` 的 `version` 字段（远程地址在 `repository.url`）
 - **标签管理**：打标签对话框（`openTagDlg`）列出该提交已有标签，每行 ✎ 改名（`tag-rename`：先建新名于同 commit 再删旧名）+ ✕ 删除（`tag-delete`，确认框按钮「确认删除」）；`confirmDialog(title, body, danger, okLabel)` 支持自定义确认按钮文字
 - **批量操作**：行复选框选择（`WD_SELECT`，键 `groupKey\0path`）→ `updateBatchBar()` 渲染批量条（暂存/取消暂存/还原/忽略/提交选中）；`commit` 带 `file` 时只暂存并提交这些文件（selective commit）；`ignore` = 追加 `.gitignore`（去重）+ 已跟踪文件先 `git rm --cached`（保留磁盘文件）；写操作成功后统一 `WD_SELECT.clear()`；「放弃/还原」统一叫**还原**（`discardConfirm`，确认框标题「还原更改」）
 - **客户端**：纯 JS + `React.createElement`（无 JSX/TSX 转换）；Slot 注册用 `ctx.slots.register`；`inject` 只声明实际使用的服务
@@ -76,3 +79,9 @@ dsh-git-graph 是 DeepSeek Harness (DSH) Web GUI 的嵌入式 Git 仓库图谱�
 
 - 提交前检查：不要把本地绝对路径（如 `D:/...`、`C:\Users\<用户名>\...`）写进 `cordis.patch.yml` / `sync-deploy.ps1` / README —— 开源仓库使用示例路径占位
 - `.gitignore` 已排除 `node_modules/`、`*.log`、`.DS_Store`、`.playwright-mcp/`（浏览器测试残留）
+- **编码铁律（教训：BOM 曾导致 Harness 启动崩溃）**：任何 `.json` / `.yaml` / `.yml` 配置文件必须 **UTF-8 无 BOM** 保存。PowerShell 5.1 的 `Set-Content -Encoding utf8` / `Out-File -Encoding utf8` **会写 BOM**（UTF8 带 BOM）——JSON.parse 严格模式不接受 BOM，会导致 `readProfileManifest → JSON.parse` 抛 `SyntaxError: Unexpected token`，Harness 启动失败。**正确写法**：
+  - 读：`[System.IO.File]::ReadAllText($path)`（自动处理编码，若需去 BOM 用 `.TrimStart([char]0xFEFF)`）
+  - 写：`[System.IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))`（`$false` = 无 BOM）
+  - 或 PowerShell 7+：`Set-Content -Encoding utf8NoBOM`
+  - 写完必须校验：读回字节前 3 字节 ≠ `EF BB BF`
+- **profile 依赖链**：profile 的 `package.json` 用 `file:` 依赖指向 `C:/Users/18412/.dsh/plugins/git-graph`（源目录），pnpm 安装时复制到 `node_modules/dsh-git-graph`（hoisted 副本）。**两处都要同步**：`sync-deploy.ps1` 同步 node_modules 副本 + 手动同步 `.dsh/plugins/git-graph` 源目录（否则下次 `pnpm install` 会用旧源覆盖副本）。`.dsh/plugins/git-graph` 不在本仓库，不参与 git

@@ -3,10 +3,12 @@
 //   GET /git-graph/api?op=<op>&repo=<path>[&hash=<sha>]  -> JSON git data
 //   GET /git-graph/index.html                           -> the visualizer page
 // Commands are executed with execFile (no shell), fixed argument lists only.
-import { execFile } from 'node:child_process'
-import { appendFileSync, readFileSync, statSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { execFile, execFileSync } from 'node:child_process'
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import net from 'node:net'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const webRoot = join(here, 'web')
@@ -39,6 +41,182 @@ async function isGitRepo(repo) {
   } catch {
     return false
   }
+}
+
+/* ===================== self-update ===================== */
+// Checks the GitHub repo for newer tags and can replace this plugin's files
+// from a codeload zip. No API key needed: version lookup uses `git ls-remote
+// --tags`, download uses https://codeload.github.com (zip, extracted by
+// bsdtar which ships with Windows 10+ / macOS / most Linux distros).
+const UPDATE_REPO = '1841220388zzzcccxxx-star/dsh-git-graph'
+const UPDATE_GH = `https://github.com/${UPDATE_REPO}`
+
+function localVersion() {
+  try {
+    const pkg = JSON.parse(readFileSync(join(here, 'package.json'), 'utf8'))
+    return pkg.version || ''
+  } catch { return '' }
+}
+
+/** Compare dotted versions: 1 if a>b, -1 if a<b, 0 if equal. */
+function cmpVer(a, b) {
+  const pa = String(a).replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0)
+  const pb = String(b).replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] || 0
+    const y = pb[i] || 0
+    if (x > y) return 1
+    if (x < y) return -1
+  }
+  return 0
+}
+
+/** Extra `git -c` args for network commands. Honors the user's global
+ *  http(s).proxy / sslBackend / http.version config; if no proxy is set it
+ *  auto-detects common local proxy ports (Clash/mihomo 7897, Clash 7890,
+ *  v2ray 10809, socks 1080, etc.) and falls back to OpenSSL + HTTP/1.1
+ *  (Windows schannel often fails against GitHub on CN networks). */
+const PROXY_PORTS = [7897, 7890, 10809, 1080, 8888, 7891]
+function portOpen(port) {
+  return new Promise((resolve) => {
+    const sock = new net.Socket()
+    sock.setTimeout(400)
+    sock.once('connect', () => { sock.destroy(); resolve(true) })
+    sock.once('timeout', () => { sock.destroy(); resolve(false) })
+    sock.once('error', () => { sock.destroy(); resolve(false) })
+    sock.connect(port, '127.0.0.1')
+  })
+}
+
+/** Resolve a usable proxy for GitHub: global git config wins, then a
+ *  listening local proxy port. Returns '' when none found. */
+async function resolveProxy() {
+  const readGlobal = (k) => {
+    try {
+      const out = execFileSync('git', ['config', '--global', '--get', k], { encoding: 'utf8', windowsHide: true })
+      return out.trim()
+    } catch { return '' }
+  }
+  const fromConfig = readGlobal('http.proxy') || readGlobal('https.proxy')
+  if (fromConfig) return fromConfig
+  for (const port of PROXY_PORTS) {
+    if (await portOpen(port)) return `http://127.0.0.1:${port}`
+  }
+  return ''
+}
+
+/** Extra `git -c` args for network commands: proxy (global config or
+ *  auto-detected local port) + OpenSSL backend + HTTP/1.1 (Windows
+ *  schannel often fails against GitHub on CN networks). */
+async function gitNetArgs() {
+  const extra = []
+  const readGlobal = (k) => {
+    try {
+      const out = execFileSync('git', ['config', '--global', '--get', k], { encoding: 'utf8', windowsHide: true })
+      return out.trim()
+    } catch { return '' }
+  }
+  const proxy = await resolveProxy()
+  if (proxy) extra.push('-c', 'http.proxy=' + proxy, '-c', 'https.proxy=' + proxy)
+  const backend = readGlobal('http.sslBackend') || 'openssl'
+  extra.push('-c', 'http.sslBackend=' + backend)
+  const ver = readGlobal('http.version') || 'HTTP/1.1'
+  extra.push('-c', 'http.version=' + ver)
+  return extra
+}
+
+async function latestTag() {
+  const out = await runGit(here, [...await gitNetArgs(), 'ls-remote', '--tags', UPDATE_GH], MAX_GIT_BUFFER, 60000)
+  const tags = new Set()
+  for (const line of String(out).split('\n')) {
+    const m = line.match(/refs\/tags\/(v?\d+\.\d+(?:\.\d+)?)(\^\{\})?$/)
+    if (m && !m[2]) tags.add(m[1])
+  }
+  if (!tags.size) return ''
+  return [...tags].sort((a, b) => cmpVer(b, a))[0]
+}
+
+/** Download + extract + swap this plugin's files with the given tag.
+ *  Uses `git clone --depth 1 --branch <tag>` so the download rides the same
+ *  proxy / sslBackend / http.version config as every other git command. */
+async function applyUpdate(tag) {
+  if (!/^v?\d+\.\d+(?:\.\d+)?$/.test(tag)) throw new Error('bad-tag')
+  const tmp = mkdtempSync(join(tmpdir(), 'ggupd-'))
+  const srcDir = join(tmp, 'src')
+  try {
+    await runGit(here, [...await gitNetArgs(), 'clone', '--depth', '1', '--branch', tag, UPDATE_GH, srcDir], MAX_GIT_BUFFER, 180000)
+    if (!statSync(join(srcDir, 'index.js'), { throwIfNoEntry: false })) throw new Error('missing-index')
+    if (!statSync(join(srcDir, 'web', 'index.html'), { throwIfNoEntry: false })) throw new Error('missing-web')
+
+    // backup the current install, then swap (skip the cloned .git dir).
+    // The backup lives next to the plugin dir (sibling), never inside it,
+    // so it survives clearTree and is easy for users to find.
+    const bak = join(dirname(here), basename(here) + '.bak-' + Date.now())
+    try {
+      copyTree(here, bak)
+      clearTree(here)
+      copyTree(srcDir, here, true)
+    } catch (err) {
+      // roll back to the backup
+      try { clearTree(here); copyTree(bak, here) } catch { /* best effort */ }
+      throw err
+    }
+    // keep only the newest backup
+    pruneBackups()
+  } finally {
+    // Windows: cloned .git dirs may still be held by AV/antivirus scanners or
+    // lingering file handles, so retry; and never let cleanup failure mask a
+    // successful update (the swap above already happened).
+    try {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 6, retryDelay: 250 })
+    } catch {
+      scheduleCleanup(tmp)
+    }
+  }
+}
+
+/** Best-effort late cleanup of a temp dir Windows refused to delete yet
+ *  (handles usually release within a few seconds). Never throws. */
+function scheduleCleanup(dir) {
+  let tries = 0
+  const attempt = () => {
+    tries++
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch {
+      if (tries < 12) setTimeout(attempt, 1000)
+    }
+  }
+  setTimeout(attempt, 1500)
+}
+
+function copyTree(src, dst, skipDotGit) {
+  const cp = (s, d) => {
+    const st = statSync(s, { throwIfNoEntry: false })
+    if (!st) return
+    if (st.isDirectory()) {
+      if (skipDotGit && s.endsWith('.git')) return
+      mkdirSync(d, { recursive: true })
+      for (const name of readdirSync(s)) cp(join(s, name), join(d, name))
+    } else if (st.isFile()) {
+      copyFileSync(s, d)
+    }
+  }
+  cp(src, dst)
+}
+function clearTree(dir) {
+  if (!statSync(dir, { throwIfNoEntry: false })) return
+  for (const name of readdirSync(dir)) {
+    if (name.startsWith('.bak-')) continue
+    rmSync(join(dir, name), { recursive: true, force: true })
+  }
+}
+function pruneBackups() {
+  const parent = dirname(here)
+  const base = basename(here)
+  const prefix = base + '.bak-'
+  const baks = readdirSync(parent).filter((n) => n.startsWith(prefix)).sort()
+  for (const b of baks.slice(0, -1)) rmSync(join(parent, b), { recursive: true, force: true })
 }
 
 /** Walk upward from `start` until a directory containing `.git` is found. */
@@ -418,6 +596,37 @@ export function apply(ctx, config = {}) {
             // Drop the .git suffix and any trailing slash.
             web = web.replace(/\.git\/?$/, '').replace(/\/+$/, '')
             sendJson({ ok: true, web, remote: raw })
+            break
+          }
+          case 'checkupdate': {
+            // Compare the installed version against the latest GitHub tag.
+            // Read-only; the client decides whether to offer an update.
+            // Even when the network fails we still return the installed
+            // version so the UI can always display it.
+            const current = localVersion()
+            try {
+              const latest = await latestTag()
+              sendJson({ ok: true, current, latest, hasUpdate: latest ? cmpVer(latest, current) > 0 : false })
+            } catch (err) {
+              sendJson({ ok: true, current, latest: '', hasUpdate: false, network: false, error: String((err && err.message) || err) })
+            }
+            break
+          }
+          case 'autoupdate': {
+            // Download the given tag from GitHub and swap this plugin's files.
+            // The caller must confirm first; a restart of dsh web is required
+            // afterwards (the running process keeps the old code in memory).
+            const tag = url.searchParams.get('tag')
+            if (!tag) {
+              sendJson({ ok: false, error: 'missing-tag' }, 400)
+              return
+            }
+            try {
+              await applyUpdate(tag)
+              sendJson({ ok: true, restart: true })
+            } catch (err) {
+              sendJson({ ok: false, error: String((err && err.message) || err) }, 500)
+            }
             break
           }
           case 'suggestmsg': {

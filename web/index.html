@@ -679,6 +679,15 @@
   #statusLine .dirty { color: var(--orange); cursor: pointer; }
   #statusLine .dirty:hover { text-decoration: underline; }
   #statusLine .clean { color: var(--green); }
+  /* plugin version badge pinned to the right end of the status bar */
+  #statusLine .gg-version {
+    margin-left: auto; flex: none;
+    font-size: 11px; color: var(--text3);
+    cursor: pointer; user-select: none;
+    border: 1px solid var(--border); border-radius: 5px;
+    padding: 1px 7px; background: var(--bg3);
+  }
+  #statusLine .gg-version:hover { color: var(--accent); border-color: var(--accent); }
   /* --- graph elements --- */
   .gg-node { cursor: pointer; }
   .gg-node circle { stroke: var(--bg); stroke-width: 2; }
@@ -752,6 +761,7 @@
   <button id="btnFetch" title="拉取远程更新（git fetch）">⬇ 拉取</button>
   <button id="btnPush" title="推送当前分支到远程（git push）">⬆ 推送</button>
   <button id="btnRefresh" title="重新加载">↻ 刷新</button>
+  <button id="btnUpdate" title="检查插件新版本" style="display:none">🔄 检查更新</button>
   <div class="themeWrap">
     <button id="btnTheme" title="切换主题">◐ 主题</button>
     <div id="themeMenu">
@@ -1188,6 +1198,7 @@ function visibleSet() {
 
 /* ===== branch-group rows: each branch (incl. the HEAD mainline) gets a foldable group header ===== */
 let BRANCH_FOLDED = new Set(loadStored("gg2-brfolded", [])); // refnames of collapsed branch groups
+let BRANCH_FOLD_DEFAULTED = false; // one-time: fold every branch group on very first load
 function buildRows(vis) {
   const rows = []; // {type:'commit', hash} | {type:'head', refname, name, tip, count, head?}
   const seen = new Set();
@@ -2390,6 +2401,14 @@ function renderStatusLine() {
     clean.textContent = "✓ 工作区干净";
     el.appendChild(clean);
   }
+  // version badge pinned to the right end of the status bar
+  const ver = document.createElement("span");
+  ver.className = "gg-version";
+  ver.id = "ggVersion";
+  ver.title = "插件版本，点击检查更新";
+  ver.textContent = "v" + (UPDATE_STATE && UPDATE_STATE.current ? UPDATE_STATE.current : "?");
+  ver.addEventListener("click", () => checkForUpdate(false));
+  el.appendChild(ver);
 }
 
 /* ===================== load ===================== */
@@ -2472,6 +2491,15 @@ async function load() {
     LOADED = COMMITS.length;
     BRANCHES = branches.ok ? branches.branches.map(normalizeBranch) : [];
     BRANCH_COLOR_CACHE = null;
+    // 首次加载（尚无任何折叠偏好存储时）默认折叠全部分支组：
+    // 只显示分组头，点击组头才展开该组提交；仅执行一次，之后尊重用户手动状态。
+    if (!BRANCH_FOLD_DEFAULTED && !localStorage.getItem("gg2-brfolded")) {
+      BRANCH_FOLD_DEFAULTED = true;
+      for (const b of BRANCHES) {
+        if (b.kind === "local" || b.kind === "remote") BRANCH_FOLDED.add(b.refname);
+      }
+      saveStored("gg2-brfolded", [...BRANCH_FOLDED]);
+    }
     fillFilterMenu();
     SELECTED = null;
     KEY_IDX = 0;
@@ -2482,6 +2510,8 @@ async function load() {
     if (COMMITS.length) {
       setTimeout(() => scrollToNode(COMMITS[0].hash), 120);
     }
+    // silent update check after the graph is usable
+    setTimeout(() => checkForUpdate(true), 800);
   } catch (err) {
     $("loading").textContent = "加载失败: " + err.message;
   } finally {
@@ -2621,6 +2651,55 @@ $("repoSwitch").addEventListener("change", (ev) => {
   wdDiffCache.clear();
   reloadGraphLight();
   refreshWorkdir();
+});
+
+/* ---- self-update: check GitHub for a newer tag, offer one-click update ---- */
+let UPDATE_STATE = null; // {current, latest, hasUpdate}
+async function checkForUpdate(silent) {
+  const btn = $("btnUpdate");
+  try {
+    const res = await api("checkupdate");
+    if (!res.ok) { if (!silent) alert("检查更新失败: " + (res.error || "?")); return; }
+    UPDATE_STATE = res;
+    // keep the version badge in the status bar in sync
+    const ver = $("ggVersion");
+    if (ver && res.current) ver.textContent = "v" + res.current;
+    if (res.hasUpdate && res.latest) {
+      btn.style.display = "";
+      btn.textContent = "🔄 新版本 " + res.latest;
+      btn.title = "发现新版本 " + res.latest + "（当前 " + (res.current || "?") + "），点击一键更新";
+    } else if (!silent) {
+      btn.style.display = "none";
+      alert("已是最新版本（" + (res.current || "?") + "）");
+    }
+  } catch (err) {
+    if (!silent) alert("检查更新失败: " + err.message);
+  }
+}
+$("btnUpdate").addEventListener("click", async () => {
+  if (!UPDATE_STATE || !UPDATE_STATE.hasUpdate) { checkForUpdate(false); return; }
+  const ok = await confirmDialog(
+    "发现新版本",
+    "当前版本 <b>" + (UPDATE_STATE.current || "?") + "</b>，最新版本 <b>" + UPDATE_STATE.latest +
+      "</b>。将自动从 GitHub 下载并替换插件文件，<b>完成后需要重启 DeepSeek Harness 才能生效</b>。继续？",
+    false, "立即更新"
+  );
+  if (!ok) return;
+  const btn = $("btnUpdate");
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = "更新中…";
+  try {
+    const res = await api("autoupdate", { tag: UPDATE_STATE.latest });
+    if (!res.ok) { alert("更新失败: " + (res.error || "?")); return; }
+    alert("更新完成！请重启 DeepSeek Harness 使新版本生效。");
+    btn.style.display = "none";
+  } catch (err) {
+    alert("更新失败: " + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
 });
 
 let searchTimer = null;
