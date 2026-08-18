@@ -22,6 +22,7 @@ View, browse and manage git repositories right inside the harness conversation �
 
 - **Commit history graph**: GitHub-style commit list with foldable per-branch groups and branch coloring (local and remote branches each get their own group)
 - **Follows the current session**: shows the git repository of the workspace you are viewing; switching sessions follows automatically. Non-git workspaces show an empty state
+- **📂 Open folder (v0.11)**: not limited to the current session workspace — click "Open" in the top bar (or "Open folder" in the empty state) to browse the disk (drives → folders, with git markers), pick any folder (e.g. a repo B in another workspace) and view its version control; added repos persist, switch via the top dropdown any time, and they survive a page refresh
 - **Branch filtering**: checked = visible, unchecked = fully hidden (empty selection shows an empty list)
 - **Commit details**: commit message, changed files, per-file diffs, compare two commits (Ctrl+click), 📜 file history (every commit touching a file)
 - **Uncommitted changes (VSCode-style, persistent at the top of the graph)**: grouped file lists (Staged / Changes / Untracked), status badges (A/M/D/R/U/?), per-file +/− line counts, click-to-expand per-file diff (syntax highlighted), renames `old → new`, untracked file contents; the ☑ groups toggle hides any group, and both the panel and each group fold on click; **per-row stage/unstage/restore, top-bar stage-all/commit, checkboxes for batch actions (stage/unstage/restore/ignore/commit selected)** (destructive actions ask for confirmation first); the commit dialog can **✨ AI-generate a commit message** (heuristic candidates from the diff, editable)
@@ -65,7 +66,7 @@ Add the following to the profile's `cordis.patch.yml`:
         repo: "C:/path/to/your/repo"
 ```
 
-> `config.repo` / `config.repos` is the initial allowlist of repositories the graph panel may open; repositories discovered in the session workspace are added automatically at runtime.
+> `config.repo` / `config.repos` is an **optional** initial allowlist of repositories the graph panel may open; you can skip it entirely — the "📂 Open" button (v0.11) lets you browse and add any folder's git repo on the fly, and the picks are remembered. Repositories discovered in the session workspace are added automatically at runtime, too.
 
 ### 3. Install and restart
 
@@ -81,6 +82,8 @@ Open http://127.0.0.1:3080 and select the **Git 图谱** tab in any session.
 | Action | Description |
 | --- | --- |
 | "Git 图谱" tab in a session | Open the graph for the current session's workspace |
+| 📂 Open / empty-state "Open folder" | Browse the disk and pick any git repo (e.g. folder B in another workspace); it is added and its graph is shown (v0.11) |
+| Repo dropdown at the top | Switch repositories - the repo label to its left shows the full path |
 | Branch group header | Click to fold / unfold that branch |
 | ☑ Branch filter | Checked = visible, unchecked = fully hidden |
 | "未提交改动" block at the top of the graph | Staged / Changes / Untracked overview (incl. untracked files); click a file row to expand its diff; per-row stage/unstage/restore; batch actions via checkboxes |

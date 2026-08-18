@@ -336,7 +336,20 @@ export function apply(ctx, config = {}) {
   const normalize = (p) => String(p).replace(/[\\/]+$/, '')
   const allowed = [...new Set(configured.map(normalize))].filter(Boolean)
   // Workspace-discovered repos (from the repos op) are accepted for reads too.
+  // `recentKeys` holds case-folded keys so Windows paths differing only in case
+  // still match (e.g. "C:/Work" vs "c:/work").
   const recentRepos = new Set()
+  const recentKeys = new Set()
+  const normKey = (p) => {
+    const s = String(p).replace(/\\/g, '/').replace(/\/+$/, '')
+    return process.platform === 'win32' ? s.toLowerCase() : s
+  }
+  const repoAllowed = (p) => {
+    const k = normKey(p)
+    if (allowed.some((a) => normKey(a) === k)) return true
+    return recentKeys.has(k)
+  }
+  const addRecent = (p) => { recentRepos.add(p); recentKeys.add(normKey(p)) }
 
   ctx.webServer.register({
     kind: 'prefix',
@@ -372,10 +385,23 @@ export function apply(ctx, config = {}) {
         if (op === 'repos') {
           // The current session's workspace (ws) is preferred when a git work
           // tree is found at or above it; configured repos follow as fallbacks.
+          // `add` re-registers repos the user picked via the folder picker
+          // (they are persisted on the client and re-sent on every load,
+          // because the in-memory allow-set resets when dsh restarts).
+          for (const a of url.searchParams.getAll('add')) {
+            const root = findGitRoot(a)
+            if (root) addRecent(root)
+          }
+          // Drop configured paths that are not working git trees, so a stale
+          // example config never poisons the repo list (not-a-git-repo).
+          const configuredOk = []
+          for (const r of allowed) {
+            if (await isGitRepo(r)) configuredOk.push(r)
+          }
           const ws = normalize(url.searchParams.get('ws') || '')
           let wsRoot = null
           let wsIsGit = false
-          let current = allowed[0] ?? null
+          let current = configuredOk[0] ?? recentRepos.values().next().value ?? null
           if (ws) {
             const root = findGitRoot(ws)
             if (root) {
@@ -386,16 +412,82 @@ export function apply(ctx, config = {}) {
           }
           const repos = []
           if (wsRoot) repos.push(wsRoot)
-          for (const r of allowed) if (!repos.includes(r)) repos.push(r)
-          for (const r of repos) recentRepos.add(r)
+          for (const r of configuredOk) if (!repos.includes(r)) repos.push(r)
+          for (const r of recentRepos) if (!repos.includes(r)) repos.push(r)
+          for (const r of repos) addRecent(r)
           sendJson({ ok: true, repos, current, ws, wsRoot, wsIsGit })
+          return
+        }
+
+        if (op === 'listdir') {
+          // Directory browser for the "打开文件夹" picker. Read-only; lists only
+          // subdirectories (never files) with a per-entry git marker ("git"
+          // = the folder contains a .git entry, so it is a repo or a submodule).
+          const listSubdirs = (dir) => {
+            let entries = []
+            try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return { dirs: [], truncated: false, readable: false } }
+            const names = entries
+              .filter((e) => e.isDirectory() && e.name !== '.git')
+              .map((e) => e.name)
+              .sort((a, b) => a.localeCompare(b))
+            const limit = 500
+            const dirs = names.slice(0, limit).map((name) => {
+              const full = join(dir, name)
+              let git = false
+              try { git = !!statSync(join(full, '.git'), { throwIfNoEntry: false }) } catch { /* unreadable */ }
+              return { name, path: full.replace(/\\/g, '/'), git }
+            })
+            return { dirs, truncated: names.length > limit, readable: true }
+          }
+          let p = String(url.searchParams.get('path') || '').trim().replace(/\\/g, '/')
+          if (!p) {
+            if (process.platform === 'win32') {
+              // No path yet: list the drive letters the picker can start from.
+              const drives = []
+              for (let c = 65; c <= 90; c++) {
+                const d = String.fromCharCode(c) + ':/'
+                try { if (statSync(d).isDirectory()) drives.push(d) } catch { /* drive absent */ }
+              }
+              sendJson({ ok: true, path: '', parent: null, drives, dirs: [], root: null, truncated: false, readable: true })
+              return
+            }
+            p = '/'
+          }
+          let abs
+          try { abs = resolve(p) } catch { sendJson({ ok: false, error: 'bad-path', path: p }, 400); return }
+          const st = statSync(abs, { throwIfNoEntry: false })
+          if (!st) { sendJson({ ok: false, error: 'not-found', path: p }, 404); return }
+          if (!st.isDirectory()) { sendJson({ ok: false, error: 'not-a-directory', path: p }, 400); return }
+          const norm = abs.replace(/\\/g, '/')
+          const par = dirname(norm)
+          const { dirs, truncated, readable } = listSubdirs(abs)
+          let root = null
+          try { root = findGitRoot(abs) } catch { /* ignore */ }
+          sendJson({ ok: true, path: norm, parent: par === norm ? null : par, dirs, root, truncated, readable })
+          return
+        }
+
+        if (op === 'addrepo') {
+          // Register a folder (or any folder inside one) as an openable repo:
+          // finds the enclosing git work tree, like the workspace discovery.
+          const p = String(url.searchParams.get('path') || '').trim()
+          if (!p) { sendJson({ ok: false, error: 'missing-path' }, 400); return }
+          let abs
+          try { abs = resolve(p) } catch { sendJson({ ok: false, error: 'bad-path', path: p }, 400); return }
+          const st = statSync(abs, { throwIfNoEntry: false })
+          if (!st) { sendJson({ ok: false, error: 'not-found', path: p }, 404); return }
+          if (!st.isDirectory()) { sendJson({ ok: false, error: 'not-a-directory', path: p }, 400); return }
+          const root = findGitRoot(abs)
+          if (!root) { sendJson({ ok: false, error: 'not-a-git-repo', path: p }, 400); return }
+          addRecent(root)
+          sendJson({ ok: true, repo: root })
           return
         }
 
         let repo = url.searchParams.get('repo') || allowed[0]
         const repoNorm = normalize(repo || '')
-        if (!repoNorm || (!allowed.includes(repoNorm) && !recentRepos.has(repoNorm))) {
-          sendJson({ ok: false, error: 'repo-not-allowed', repos: allowed }, 403)
+        if (!repoNorm || !repoAllowed(repoNorm)) {
+          sendJson({ ok: false, error: 'repo-not-allowed', repos: allowed.concat([...recentRepos]) }, 403)
           return
         }
         repo = repoNorm

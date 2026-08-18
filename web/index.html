@@ -664,6 +664,48 @@
     flex: none; font-family: Consolas, monospace; font-size: 11px; color: var(--accent);
     border: 1px solid var(--border); border-radius: 5px; padding: 1px 7px; background: var(--bg3);
   }
+  /* folder picker ("打开文件夹": browse the disk and open any folder as a repo) */
+  #pickdirDlg {
+    position: fixed; inset: 0; z-index: 60; display: none;
+    background: rgba(0,0,10,.55); align-items: center; justify-content: center;
+  }
+  #pickdirDlg.show { display: flex; }
+  #pickdirDlg .pd-box { width: min(620px, 92%); display: flex; flex-direction: column; }
+  #pickdirDlg .dlg-body { display: flex; flex-direction: column; }
+  .pd-path {
+    flex: 1; text-align: right; font-weight: 400; font-size: 11px; color: var(--text3);
+    font-family: Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .pd-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .pd-bar button {
+    height: 28px; padding: 0 12px; border: 1px solid var(--border);
+    background: var(--bg3); color: var(--text); border-radius: 7px;
+    cursor: pointer; font-size: 12px; white-space: nowrap;
+  }
+  .pd-bar button:hover:not(:disabled) { border-color: var(--text3); background: var(--bg4); }
+  .pd-bar button:disabled { opacity: .5; cursor: default; }
+  .pd-bar button.primary { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,.1); }
+  .pd-bar button.primary:hover:not(:disabled) { background: rgba(88,166,255,.2); }
+  .pd-spacer { flex: 1; }
+  #pdHint { font-size: 11px; color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
+  .pd-list {
+    flex: 1; min-height: 220px; max-height: 46vh; overflow: auto;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 4px;
+  }
+  .pd-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px; color: var(--text); }
+  .pd-item:hover { background: var(--bg3); }
+  .pd-item .pd-ico { flex: none; font-size: 13px; }
+  .pd-item .pd-name { flex: 1; font-family: Consolas, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pd-item.pd-hidden .pd-name { color: var(--text3); }
+  .pd-item .pd-git {
+    flex: none; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px;
+    background: rgba(63,185,80,.14); color: var(--green); border: 1px solid rgba(63,185,80,.35);
+  }
+  .pd-item .pd-in {
+    flex: none; font-size: 10px; padding: 1px 6px; border-radius: 4px;
+    background: rgba(88,166,255,.12); color: var(--accent);
+  }
+  .pd-empty { padding: 22px; text-align: center; color: var(--text3); font-size: 12.5px; }
   /* --- status line --- */
   #statusLine {
     height: 32px; flex: none;
@@ -735,6 +777,13 @@
   .es-ico { font-size: 46px; opacity: .85; }
   .es-title { font-size: 15px; font-weight: 600; color: var(--text); }
   .es-sub { font-size: 12.5px; line-height: 1.8; max-width: 420px; }
+  .es-open {
+    margin-top: 8px; height: 32px; padding: 0 18px;
+    border: 1px solid var(--accent); color: var(--accent);
+    background: rgba(88,166,255,.12); border-radius: 8px;
+    cursor: pointer; font-size: 12.5px;
+  }
+  .es-open:hover { background: rgba(88,166,255,.2); }
   .es-path { font-size: 11.5px; color: var(--text2); word-break: break-all; max-width: 460px; opacity: .85; }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
@@ -758,6 +807,7 @@
       <div id="fmBranches"></div>
     </div>
   </div>
+  <button id="btnOpenDir" title="打开其他文件夹的 Git 仓库（浏览并添加任意工作区）">📂 打开</button>
   <button id="btnFetch" title="拉取远程更新（git fetch）">⬇ 拉取</button>
   <button id="btnPush" title="推送当前分支到远程（git push）">⬆ 推送</button>
   <button id="btnRefresh" title="重新加载">↻ 刷新</button>
@@ -787,8 +837,9 @@
     <div id="loading">加载中…</div>
     <div id="emptyState" class="hidden">
       <div class="es-ico">🗂️</div>
-      <div class="es-title">当前对话区域不是 Git 仓库</div>
-      <div class="es-sub">该对话的工作区没有 git 仓库，图谱不显示。</div>
+      <div class="es-title" id="esTitle">当前对话区域不是 Git 仓库</div>
+      <div class="es-sub" id="esSub">该对话的工作区没有 git 仓库。可以点击下方按钮浏览并打开其他文件夹的 Git 仓库。</div>
+      <button id="btnOpenDirEmpty" class="es-open" title="浏览磁盘，选择任意文件夹作为 Git 仓库显示">📂 打开文件夹</button>
       <div class="es-path" id="emptyPath"></div>
     </div>
     <div id="wdPanel"></div>
@@ -837,6 +888,22 @@
     <div class="dlg-head"><span class="dlg-ico">⌨️</span>快捷键</div>
     <div class="dlg-body" id="shortcutDlgBody"></div>
     <div class="dlg-foot"><button id="shortcutDlgClose">关闭</button></div>
+  </div>
+</div>
+<div id="pickdirDlg">
+  <div class="dlg-box pd-box">
+    <div class="dlg-head"><span class="dlg-ico">📂</span>打开文件夹<span class="pd-path" id="pdPath"></span></div>
+    <div class="dlg-body">
+      <div class="pd-bar">
+        <button id="pdUp" title="上一级目录">⬆ 上一级</button>
+        <span class="pd-spacer"></span>
+        <span id="pdHint"></span>
+        <button id="pdOpen" class="primary" title="把该文件夹添加为 Git 仓库并显示其图谱" disabled>打开此文件夹</button>
+      </div>
+      <div class="pd-list" id="pdList"></div>
+      <div style="font-size:11px;color:var(--text3);margin-top:8px">绿色的 <span style="color:var(--green)">git</span> 标记表示该文件夹本身是 Git 仓库；选中仓库内的子文件夹也会自动定位到仓库根。</div>
+    </div>
+    <div class="dlg-foot"><button id="pdClose">关闭</button></div>
   </div>
 </div>
 <script>
@@ -1176,6 +1243,9 @@ const PAGE = 200;         // commits per page (large-repo pagination)
 let LOADED = 0;           // commits loaded so far
 let TOTAL = 0;            // total commits in the repo
 let REPO_LIST = [];       // available repos for the switcher
+let ADDED_REPOS = loadStored("gg2-repos", []);   // repos added by the user via "打开文件夹" (persisted)
+let PICK_PATH = "";  // folder picker: currently browsed path
+let PICK_ROOT = null; // folder picker: git root containing PICK_PATH (null = not in a repo)
 function visibleSet() {
   if (FILTER === "all") return null;
   if (FILTER === "multi") {
@@ -2444,6 +2514,8 @@ function showEmpty(ws) {
   $("repoLabel").textContent = "—";
   $("repoLabel").title = "";
   $("emptyPath").textContent = ws || "";
+  $("esTitle").textContent = "当前对话区域不是 Git 仓库";
+  $("esSub").textContent = "该对话的工作区没有 git 仓库。可以点击下方按钮浏览并打开其他文件夹的 Git 仓库。";
   $("emptyState").classList.remove("hidden");
 }
 function hideEmpty() {
@@ -2456,27 +2528,47 @@ async function load() {
   try {
     if (!SESSION_WS) SESSION_WS = await resolveSessionWs();
     const ws = SESSION_WS;
-    const repos = await api("repos", ws ? { ws } : {});
+    // 重新注册用户通过「打开文件夹」添加过的仓库（服务端内存态重启后重置）
+    const saved = ADDED_REPOS.filter(Boolean);
+    const repos = await api("repos", Object.assign({}, ws ? { ws } : {}, saved.length ? { add: saved } : {}));
     if (!repos.ok || !repos.repos.length) {
-      $("loading").textContent = "未配置仓库：请在 cordis.patch.yml 的 git-graph config.repo 中填写仓库路径";
+      // 没有任何可用仓库：显示空态并引导用「打开文件夹」添加
+      showEmpty(SESSION_WS || "");
+      $("esTitle").textContent = "尚未添加 Git 仓库";
+      $("esSub").textContent = "当前没有可用的 Git 仓库。点击下方按钮（或顶部「📂 打开」）浏览磁盘，选择任意文件夹的 Git 仓库：";
       return;
     }
-    // 当前对话的目录不是 git 仓库 → 不显示图谱（不回落配置仓库）
-    if (SESSION_WS && !repos.wsIsGit) {
+    // 当前对话在非 git 工作区：没有用户主动添加的仓库时显示空态（不回落配置仓库）
+    if (SESSION_WS && !repos.wsIsGit && !saved.length) {
       showEmpty(SESSION_WS);
       return;
     }
-    REPO = repos.current || repos.repos[0];
+    // 当前仓库：上次选择的 > 会话工作区根 > 用户添加的第一个 > 服务端默认
+    const available = repos.repos;
+    let current = repos.current;
+    const last = loadStored("gg2-currepo", "");
+    if (last && available.includes(last)) current = last;
+    else if (repos.wsIsGit && repos.wsRoot) current = repos.wsRoot;
+    else if (saved.length) {
+      const f = available.find((r) => r === saved[0]);
+      if (f) current = f;
+    }
+    if (!current || !available.includes(current)) current = available[0];
+    REPO = current;
     $("repoLabel").textContent = REPO;
     $("repoLabel").title = REPO;
-    // repo switcher (hidden when only one repo)
+    // repo switcher (hidden when only one repo); show the folder name, full path in title
     const sw = $("repoSwitch");
-    REPO_LIST = repos.repos || [];
+    REPO_LIST = available;
     sw.innerHTML = "";
+    const usedShort = new Set();
     for (const r of REPO_LIST) {
       const o = document.createElement("option");
+      const short = (r.split("/").pop() || r);
+      if (usedShort.has(short)) { o.textContent = r; }
+      else { usedShort.add(short); o.textContent = short; }
+      o.title = r;
       o.value = r;
-      o.textContent = r;
       if (r === REPO) o.selected = true;
       sw.appendChild(o);
     }
@@ -2485,7 +2577,14 @@ async function load() {
       api("graph", { limit: PAGE, skip: 0 }),
       api("branches")
     ]);
-    if (!graph.ok) { $("loading").textContent = "加载失败: " + (graph.error || "?"); return; }
+    if (!graph.ok) {
+      // 仓库当前不可用（配置失效/权限等）：显示空态并引导用「打开文件夹」选择。
+      $("loading").classList.add("hidden");
+      showEmpty(SESSION_WS || "");
+      $("esTitle").textContent = "当前仓库不可用";
+      $("esSub").textContent = "无法读取仓库：" + (graph.error || "?") + "。可以点击下方按钮（或顶部「📂 打开」）打开其他文件夹的 Git 仓库：";
+      return;
+    }
     COMMITS = graph.commits;
     TOTAL = graph.total || COMMITS.length;
     LOADED = COMMITS.length;
@@ -2518,6 +2617,136 @@ async function load() {
     $("loading").classList.add("hidden");
   }
 }
+
+/* ===================== 打开文件夹：浏览磁盘并添加任意 Git 仓库 ===================== */
+/** 取上一级目录；盘符根或空路径返回 null（回到驱动器列表）。 */
+function dirNameOf(p) {
+  const s = String(p).replace(/\/+$/, "");
+  if (!s) return null;
+  const i = s.lastIndexOf("/");
+  if (i <= 0) return null;
+  return s.slice(0, i);
+}
+function pickCell(text) {
+  const d = document.createElement("div");
+  d.className = "pd-empty";
+  d.textContent = text;
+  return d;
+}
+/** 刷新文件夹选择列表（盘符视图或目录视图）。 */
+async function browseDir(path) {
+  const list = $("pdList");
+  list.innerHTML = "";
+  list.appendChild(pickCell("加载中…"));
+  try {
+    const res = await api("listdir", { path: path || "" });
+    list.innerHTML = "";
+    if (!res || !res.ok) {
+      list.appendChild(pickCell("加载失败：" + ((res && res.error) || "?")));
+      $("pdHint").textContent = "";
+      updatePickOpen();
+      return;
+    }
+    PICK_PATH = res.path || path || "";
+    PICK_ROOT = res.root || null;
+    $("pdPath").textContent = res.path || (res.drives && res.drives.length ? "选择驱动器" : "");
+    $("pdUp").disabled = !res.parent;
+    if (res.drives && res.drives.length) {
+      for (const d of res.drives) {
+        const row = document.createElement("div");
+        row.className = "pd-item";
+        const ico = document.createElement("span");
+        ico.className = "pd-ico";
+        ico.textContent = "💽";
+        const nm = document.createElement("span");
+        nm.className = "pd-name";
+        nm.textContent = d;
+        row.appendChild(ico);
+        row.appendChild(nm);
+        row.addEventListener("click", () => browseDir(d));
+        list.appendChild(row);
+      }
+    } else {
+      for (const d of (res.dirs || [])) {
+        const row = document.createElement("div");
+        row.className = "pd-item" + (d.name.startsWith(".") ? " pd-hidden" : "");
+        const ico = document.createElement("span");
+        ico.className = "pd-ico";
+        ico.textContent = d.git ? "🗂️" : "📁";
+        const nm = document.createElement("span");
+        nm.className = "pd-name";
+        nm.textContent = d.name;
+        row.appendChild(ico);
+        row.appendChild(nm);
+        if (d.git) {
+          const g = document.createElement("span");
+          g.className = "pd-git";
+          g.textContent = "git";
+          row.appendChild(g);
+        }
+        row.addEventListener("click", () => browseDir(d.path));
+        list.appendChild(row);
+      }
+      if (res.truncated) list.appendChild(pickCell("目录较多，仅显示前 500 个"));
+      if (!res.readable) list.appendChild(pickCell("无法读取此目录（可能没有权限）"));
+      if (!res.dirs.length && res.readable) list.appendChild(pickCell("此文件夹下没有子目录"));
+    }
+    updatePickOpen();
+  } catch (err) {
+    list.innerHTML = "";
+    list.appendChild(pickCell("加载失败：" + err.message));
+    updatePickOpen();
+  }
+}
+function updatePickOpen() {
+  const open = $("pdOpen");
+  const hint = $("pdHint");
+  open.disabled = !PICK_ROOT;
+  hint.textContent = PICK_ROOT
+    ? (PICK_ROOT === PICK_PATH ? "✓ 当前文件夹就是 Git 仓库" : "✓ 位于仓库内，将打开：" + PICK_ROOT)
+    : "此文件夹不是 Git 仓库（可继续进入子目录）";
+  hint.title = PICK_ROOT || "";
+}
+async function openDirPicker() {
+  $("pickdirDlg").classList.add("show");
+  $("pdList").innerHTML = "";
+  PICK_PATH = "";
+  PICK_ROOT = null;
+  $("pdUp").disabled = true;
+  await browseDir("");
+}
+async function openPickPath() {
+  if (!PICK_ROOT) return;
+  const btn = $("pdOpen");
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = "打开中…";
+  try {
+    const res = await api("addrepo", { path: PICK_PATH });
+    if (!res.ok) { alert("无法添加该仓库：" + (res.error || "?")); return; }
+    if (!ADDED_REPOS.includes(res.repo)) {
+      ADDED_REPOS.push(res.repo);
+      saveStored("gg2-repos", ADDED_REPOS);
+    }
+    saveStored("gg2-currepo", res.repo);
+    $("pickdirDlg").classList.remove("show");
+    if (REPO === res.repo) return; // 已在查看此仓库，仅关闭对话框
+    wdDiffCache.clear();
+    REPO = res.repo;
+    await load();
+  } catch (err) {
+    alert("无法添加该仓库：" + err.message);
+  } finally {
+    btn.disabled = !PICK_ROOT;
+    btn.textContent = orig;
+  }
+}
+$("btnOpenDir").addEventListener("click", openDirPicker);
+$("btnOpenDirEmpty").addEventListener("click", openDirPicker);
+$("pdClose").addEventListener("click", () => $("pickdirDlg").classList.remove("show"));
+$("pdUp").addEventListener("click", () => browseDir(dirNameOf(PICK_PATH) || ""));
+$("pdOpen").addEventListener("click", openPickPath);
+$("pickdirDlg").addEventListener("click", (ev) => { if (ev.target === $("pickdirDlg")) $("pdClose").click(); });
 
 /* ---- branch checkbox filter ---- */
 function fillFilterMenu() {
@@ -2646,6 +2875,7 @@ $("repoSwitch").addEventListener("change", (ev) => {
   const v = ev.target.value;
   if (!v || v === REPO) return;
   REPO = v;
+  saveStored("gg2-currepo", v);
   $("repoLabel").textContent = v;
   $("repoLabel").title = v;
   wdDiffCache.clear();
@@ -3118,6 +3348,7 @@ function kbdVisibleList() {
 }
 window.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape") {
+    if ($("pickdirDlg").classList.contains("show")) { $("pdClose").click(); return; }
     if ($("shortcutDlg").classList.contains("show")) { toggleShortcutDlg(false); return; }
     if ($("ggDlg").classList.contains("show")) { $("ggDlgCancel").click(); return; }
     if ($("commitDlg").classList.contains("show")) { $("commitDlgCancel").click(); return; }

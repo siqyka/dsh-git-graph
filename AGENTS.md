@@ -31,7 +31,7 @@ dsh-git-graph 是 DeepSeek Harness (DSH) Web GUI 的嵌入式 Git 仓库图谱�
 
 | op | 用途 | 关键参数 |
 | --- | --- | --- |
-| `repos` | 会话工作区向上定位 git 根 + 白名单兜底 | `ws` |
+| `repos` | 会话工作区向上定位 git 根 + 白名单兜底（白名单中非 git 仓库的路径会被过滤）；`add` 重复参数重新注册客户端持久化的「打开文件夹」仓库 | `ws`、`add`(可多个) |
 | `graph` | 提交历史（topo 序，含 refs 装饰） | — |
 | `branches` | 本地/远程/标签 refs | — |
 | `workstatus` | 未提交改动分组列表（porcelain -z + numstat -z） | — |
@@ -43,6 +43,8 @@ dsh-git-graph 是 DeepSeek Harness (DSH) Web GUI 的嵌入式 Git 仓库图谱�
 | `suggestmsg` | 依据工作区 diff 统计生成提交信息候选（启发式，无外部 AI 调用） | — |
 | `checkupdate` | 对比本地版本与 GitHub 最新 tag（`git ls-remote --tags`，复用 git 全局代理/sslBackend/version 配置），返回 `{current, latest, hasUpdate}` | — |
 | `autoupdate` | 一键自更新：`git clone --depth 1 --branch <tag>` 下载到临时目录 → 校验 `index.js`/`web/index.html` → 同级目录备份（`<插件目录>.bak-<ts>`，`pruneBackups` 保留最新 1 份）→ 清空并替换 → 需重启 dsh web 生效；失败自动回滚备份 | `tag` |
+| `listdir` | 「打开文件夹」目录浏览（只读）：列出子目录（不含文件，跳过 `.git`），每项 `git` 标记=存在 `.git` 条目；无 `path` 时返回盘符列表（win32）或 `/`；返回 `root`（`findGitRoot` 结果，供前端判断「打开此文件夹」可用性）；超 500 项截断 | `path` |
+| `addrepo` | 「打开文件夹」确认添加：对路径 `findGitRoot` 向上定位仓库根 → 加入可访问集合（`recentKeys`）→ 返回 `{repo}`；非 git 仓库报 `not-a-git-repo` | `path` |
 | `show` / `diff` / `filediff` | 提交详情 / 完整补丁 / 单文件 diff | `hash`、`file` |
 
 ## 关键约定
@@ -51,7 +53,8 @@ dsh-git-graph 是 DeepSeek Harness (DSH) Web GUI 的嵌入式 Git 仓库图谱�
 - **写操作刷新流**：`gitop` 成功后清空 `wdDiffCache` → `refreshWorkdir()`；`commit` 等改变历史/分支的操作用 `reloadGraphLight()`（不重新解析会话工作区）
 - **diff 高亮**：统一用 `highlightDiff(pre, text)` 渲染 diff（行级 `.df-head/.df-hunk/.df-add/.df-del`）；未跟踪内容/错误信息仍用 `pre.textContent`
 - **分页**：`graph` op 支持 `limit`/`skip` + `total`（rev-list --count）；客户端 `PAGE=200`，`LOADED`/`TOTAL` 跟踪进度，`render()` 末尾按 `TOTAL > LOADED` 渲染「加载更多」按钮，`loadMore()` 追加去重
-- **状态记忆**：`loadStored/saveStored` 封装 localStorage；键统一 `gg2-` 前缀（v0.8 起）：`gg2-theme`、`gg2-wdshow`（分组开关）、`gg2-wdfolded`（面板折叠）、`gg2-wdgroupfolded`（组折叠）、`gg2-brfolded`（分支组折叠）、`gg2-bfilter`（分支过滤勾选 refnames，null=全选）；分支过滤按 refname 记忆（sha 会变）
+- **状态记忆**：`loadStored/saveStored` 封装 localStorage；键统一 `gg2-` 前缀（v0.8 起）：`gg2-theme`、`gg2-wdshow`（分组开关）、`gg2-wdfolded`（面板折叠）、`gg2-wdgroupfolded`（组折叠）、`gg2-brfolded`（分支组折叠）、`gg2-bfilter`（分支过滤勾选 refnames，null=全选）；分支过滤按 refname 记忆（sha 会变）。v0.11 新增：`gg2-repos`（「打开文件夹」添加的仓库路径数组，每次 `load()` 通过 `repos?add=` 重新注册到服务端）、`gg2-currepo`（上次选择/打开的仓库，加载时优先选它）
+- **打开文件夹**（v0.11）：客户端 `listdir`/`addrepo` 走「📂 打开」按钮或空态按钮（`#btnOpenDir`/`#btnOpenDirEmpty`）；选中文件夹 `addrepo` 成功 → 写入 `gg2-repos`/`gg2-currepo` → `REPO=新仓库` → `load()` 全量重载；空态时 `REPO` 为 null 且 `api()` 不带 repo 参数，服务端 `listdir`/`addrepo`/`repos` 在 repo 校验之前处理，无碍
 - **右键菜单**：无害操作（复制/查看详情/打标签/从提交新建分支/打开 GitHub 提交页/复制仓库路径/打开文件夹）；写操作走 `gitop`（tag / tag-delete / tag-rename / branch），`remoteinfo` 失败或无远程时 GitHub 项给出提示
 - **远程/分支操作**（v0.9）：顶栏 `⬇ 拉取`（`gitop fetch` = `git fetch --all --prune`）+ `⬆ 推送`（`gitop push` 当前分支，确认框「确认推送」）；分支组头右键菜单——本地分支：🔄 切换（`checkout`，有未提交改动时先确认）、⬆ 推送该分支、🗑️ 删除（`delete-branch`，`-d` 拒绝未合并分支，HEAD 分支禁止删除）；远程分支：⬇ 拉取、复制远程分支名。fetch/pull/push 用 120s 超时（`runGit` 第 4 参）；**远程组头始终生成**——chain 为空（无独有提交）时仍显示组头，标签区分「已同步」（tip 等于同名本地分支）与「已包含」（提交全部由其他组显示）
 - **自更新**（v0.10）：`load()` 后静默调 `checkForUpdate(true)`；有新版时顶栏显示 `🔄 新版本 vX.Y` 按钮（`#btnUpdate`），点击 → 确认框「发现新版本」→ `autoupdate` → 提示重启生效；手动点击按钮在无更新时提示已最新；版本号取自 `package.json` 的 `version` 字段（远程地址在 `repository.url`）
