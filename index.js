@@ -398,23 +398,33 @@ export function apply(ctx, config = {}) {
           for (const r of allowed) {
             if (await isGitRepo(r)) configuredOk.push(r)
           }
+          // Same for user-added repos: a folder removed from disk must not stay
+          // in the switcher forever (it would become the remembered current one).
+          // Light existence check (.git entry) + case-folded dedup (recentKeys).
+          const recentOk = []
+          for (const r of recentRepos) {
+            let hasGit = false
+            try { hasGit = !!statSync(join(r, '.git')) } catch { /* vanished */ }
+            if (hasGit && !recentOk.some((x) => normKey(x) === normKey(r))) recentOk.push(r)
+          }
           const ws = normalize(url.searchParams.get('ws') || '')
           let wsRoot = null
           let wsIsGit = false
-          let current = configuredOk[0] ?? recentRepos.values().next().value ?? null
           if (ws) {
             const root = findGitRoot(ws)
             if (root) {
               wsRoot = root
               wsIsGit = true
-              current = root
             }
           }
           const repos = []
           if (wsRoot) repos.push(wsRoot)
-          for (const r of configuredOk) if (!repos.includes(r)) repos.push(r)
-          for (const r of recentRepos) if (!repos.includes(r)) repos.push(r)
+          for (const r of configuredOk) if (!repos.some((x) => normKey(x) === normKey(r))) repos.push(r)
+          for (const r of recentOk) if (!repos.some((x) => normKey(x) === normKey(r))) repos.push(r)
           for (const r of repos) addRecent(r)
+          let current = null
+          if (wsIsGit) current = wsRoot
+          else current = repos[0] ?? null // first configured/user repo (ws non-git or absent)
           sendJson({ ok: true, repos, current, ws, wsRoot, wsIsGit })
           return
         }
@@ -423,6 +433,9 @@ export function apply(ctx, config = {}) {
           // Directory browser for the "打开文件夹" picker. Read-only; lists only
           // subdirectories (never files) with a per-entry git marker ("git"
           // = the folder contains a .git entry, so it is a repo or a submodule).
+          const hasDotGit = (dir) => {
+            try { return !!statSync(join(dir, '.git')) } catch { return false }
+          }
           const listSubdirs = (dir) => {
             let entries = []
             try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return { dirs: [], truncated: false, readable: false } }
@@ -433,9 +446,7 @@ export function apply(ctx, config = {}) {
             const limit = 500
             const dirs = names.slice(0, limit).map((name) => {
               const full = join(dir, name)
-              let git = false
-              try { git = !!statSync(join(full, '.git'), { throwIfNoEntry: false }) } catch { /* unreadable */ }
-              return { name, path: full.replace(/\\/g, '/'), git }
+              return { name, path: full.replace(/\\/g, '/'), git: hasDotGit(full) }
             })
             return { dirs, truncated: names.length > limit, readable: true }
           }
@@ -453,10 +464,11 @@ export function apply(ctx, config = {}) {
             }
             p = '/'
           }
+          if (/^[A-Za-z]:$/.test(p)) p += '/' // bare drive letter ("C:") -> "C:/"
           let abs
           try { abs = resolve(p) } catch { sendJson({ ok: false, error: 'bad-path', path: p }, 400); return }
-          const st = statSync(abs, { throwIfNoEntry: false })
-          if (!st) { sendJson({ ok: false, error: 'not-found', path: p }, 404); return }
+          let st
+          try { st = statSync(abs) } catch { sendJson({ ok: false, error: 'not-found', path: p }, 404); return }
           if (!st.isDirectory()) { sendJson({ ok: false, error: 'not-a-directory', path: p }, 400); return }
           const norm = abs.replace(/\\/g, '/')
           const par = dirname(norm)
@@ -469,16 +481,18 @@ export function apply(ctx, config = {}) {
 
         if (op === 'addrepo') {
           // Register a folder (or any folder inside one) as an openable repo:
-          // finds the enclosing git work tree, like the workspace discovery.
+          // finds the enclosing git work tree, like the workspace discovery,
+          // then verifies it really is a working tree (a bare .git dir alone
+          // is not enough — it could be empty/corrupted).
           const p = String(url.searchParams.get('path') || '').trim()
           if (!p) { sendJson({ ok: false, error: 'missing-path' }, 400); return }
           let abs
           try { abs = resolve(p) } catch { sendJson({ ok: false, error: 'bad-path', path: p }, 400); return }
-          const st = statSync(abs, { throwIfNoEntry: false })
-          if (!st) { sendJson({ ok: false, error: 'not-found', path: p }, 404); return }
+          let st
+          try { st = statSync(abs) } catch { sendJson({ ok: false, error: 'not-found', path: p }, 404); return }
           if (!st.isDirectory()) { sendJson({ ok: false, error: 'not-a-directory', path: p }, 400); return }
           const root = findGitRoot(abs)
-          if (!root) { sendJson({ ok: false, error: 'not-a-git-repo', path: p }, 400); return }
+          if (!root || !(await isGitRepo(root))) { sendJson({ ok: false, error: 'not-a-git-repo', path: p }, 400); return }
           addRecent(root)
           sendJson({ ok: true, repo: root })
           return

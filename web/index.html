@@ -1245,6 +1245,7 @@ let TOTAL = 0;            // total commits in the repo
 let REPO_LIST = [];       // available repos for the switcher
 let ADDED_REPOS = loadStored("gg2-repos", []);   // repos added by the user via "打开文件夹" (persisted)
 let PICK_PATH = "";  // folder picker: currently browsed path
+let PICK_PARENT = null; // folder picker: authoritative parent path from the server (null = at a root)
 let PICK_ROOT = null; // folder picker: git root containing PICK_PATH (null = not in a repo)
 function visibleSet() {
   if (FILTER === "all") return null;
@@ -2619,14 +2620,6 @@ async function load() {
 }
 
 /* ===================== 打开文件夹：浏览磁盘并添加任意 Git 仓库 ===================== */
-/** 取上一级目录；盘符根或空路径返回 null（回到驱动器列表）。 */
-function dirNameOf(p) {
-  const s = String(p).replace(/\/+$/, "");
-  if (!s) return null;
-  const i = s.lastIndexOf("/");
-  if (i <= 0) return null;
-  return s.slice(0, i);
-}
 function pickCell(text) {
   const d = document.createElement("div");
   d.className = "pd-empty";
@@ -2638,19 +2631,24 @@ async function browseDir(path) {
   const list = $("pdList");
   list.innerHTML = "";
   list.appendChild(pickCell("加载中…"));
+  $("pdOpen").disabled = true;
   try {
     const res = await api("listdir", { path: path || "" });
     list.innerHTML = "";
     if (!res || !res.ok) {
+      PICK_ROOT = null;
+      PICK_PARENT = null;
       list.appendChild(pickCell("加载失败：" + ((res && res.error) || "?")));
       $("pdHint").textContent = "";
       updatePickOpen();
       return;
     }
     PICK_PATH = res.path || path || "";
+    PICK_PARENT = res.parent || null;
     PICK_ROOT = res.root || null;
     $("pdPath").textContent = res.path || (res.drives && res.drives.length ? "选择驱动器" : "");
-    $("pdUp").disabled = !res.parent;
+    $("pdPath").title = res.path || "";
+    $("pdUp").disabled = !PICK_PARENT;
     if (res.drives && res.drives.length) {
       for (const d of res.drives) {
         const row = document.createElement("div");
@@ -2695,6 +2693,8 @@ async function browseDir(path) {
   } catch (err) {
     list.innerHTML = "";
     list.appendChild(pickCell("加载失败：" + err.message));
+    PICK_ROOT = null;
+    PICK_PARENT = null;
     updatePickOpen();
   }
 }
@@ -2711,6 +2711,7 @@ async function openDirPicker() {
   $("pickdirDlg").classList.add("show");
   $("pdList").innerHTML = "";
   PICK_PATH = "";
+  PICK_PARENT = null;
   PICK_ROOT = null;
   $("pdUp").disabled = true;
   await browseDir("");
@@ -2744,7 +2745,7 @@ async function openPickPath() {
 $("btnOpenDir").addEventListener("click", openDirPicker);
 $("btnOpenDirEmpty").addEventListener("click", openDirPicker);
 $("pdClose").addEventListener("click", () => $("pickdirDlg").classList.remove("show"));
-$("pdUp").addEventListener("click", () => browseDir(dirNameOf(PICK_PATH) || ""));
+$("pdUp").addEventListener("click", () => browseDir(PICK_PARENT || ""));
 $("pdOpen").addEventListener("click", openPickPath);
 $("pickdirDlg").addEventListener("click", (ev) => { if (ev.target === $("pickdirDlg")) $("pdClose").click(); });
 

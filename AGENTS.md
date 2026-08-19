@@ -31,7 +31,7 @@ dsh-git-graph 是 DeepSeek Harness (DSH) Web GUI 的嵌入式 Git 仓库图谱�
 
 | op | 用途 | 关键参数 |
 | --- | --- | --- |
-| `repos` | 会话工作区向上定位 git 根 + 白名单兜底（白名单中非 git 仓库的路径会被过滤）；`add` 重复参数重新注册客户端持久化的「打开文件夹」仓库 | `ws`、`add`(可多个) |
+| `repos` | 会话工作区向上定位 git 根 + 白名单兜底（白名单与「打开文件夹」添加的仓库中，失效/非 git 的路径都会被过滤剔除，返回列表按 normKey 大小写去重）；`add` 重复参数重新注册客户端持久化的「打开文件夹」仓库 | `ws`、`add`(可多个) |
 | `graph` | 提交历史（topo 序，含 refs 装饰） | — |
 | `branches` | 本地/远程/标签 refs | — |
 | `workstatus` | 未提交改动分组列表（porcelain -z + numstat -z） | — |
