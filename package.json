@@ -1,6 +1,6 @@
 {
   "name": "dsh-git-graph",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "DSH plugin: embedded git repository graph visualizer for the DeepSeek Harness web GUI - commit history graph, branch filtering, code diffs, VSCode-style uncommitted changes panel",
   "type": "module",
   "main": "index.js",
@@ -13,6 +13,9 @@
     "./client": "./client.js",
     "./package.json": "./package.json"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "dsh": {
     "client": {
       "inject": [
@@ -22,6 +25,14 @@
     },
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "compatibility": {
+      "dsh": "0.0.1-rc.5 || >=0.1.0-rc.6 <0.2.0",
+      "dshReleases": {
+        "0.1.2-alpha.3": "compatible",
+        "0.1.2-alpha.4": "compatible",
+        "0.1.2-alpha.5": "compatible"
+      }
     }
   }
 }
