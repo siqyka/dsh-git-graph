@@ -429,6 +429,66 @@ export function apply(ctx, config = {}) {
           return
         }
 
+        if (op === 'findrepos') {
+          // One-click discovery for the empty-state button「在当前对话目录下查找 Git 仓库」:
+          // find the git root at/above the workspace; when there is none, shallow-scan
+          // subdirectories (depth <= 2, skipping heavy/hidden entries) for git work
+          // trees. Read-only: statSync/readdirSync only, no shell. Bounded work:
+          // MAX_DIRS enumerated, MAX_RESULTS returned.
+          const ws = normalize(url.searchParams.get('ws') || '')
+          let wsStat = null
+          try { wsStat = statSync(ws) } catch { /* absent */ }
+          if (!ws || !wsStat || !wsStat.isDirectory()) {
+            sendJson({ ok: false, error: 'bad-ws' }, 400)
+            return
+          }
+          const MAX_DIRS = 300
+          const MAX_RESULTS = 20
+          const out = []
+          const seen = new Set()
+          const pushRoot = (dir) => {
+            let root = null
+            try { root = findGitRoot(dir) } catch { /* ignore */ }
+            if (!root) return
+            const k = normKey(root)
+            if (seen.has(k)) return
+            seen.add(k)
+            out.push(root)
+          }
+          const depthOf = (p) => {
+            const a = String(ws).replace(/\\/g, '/').split('/')
+            const b = String(p).replace(/\\/g, '/').split('/')
+            let i = 0
+            while (i < a.length && i < b.length && a[i] === b[i]) i++
+            return b.length - i
+          }
+          pushRoot(ws)
+          if (out.length === 0) {
+            // Shallow scan: enumerate ws and its subdirectories; check every
+            // enumerated dir plus one more level for git roots.
+            const queue = [ws]
+            let dirs = 0
+            while (queue.length > 0 && dirs < MAX_DIRS && out.length < MAX_RESULTS) {
+              const dir = queue.shift()
+              let entries = []
+              try { entries = readdirSync(dir, { withFileTypes: true }) } catch { continue }
+              for (const e of entries) {
+                if (!e.isDirectory()) continue
+                const name = e.name
+                if (name === '.git' || name === 'node_modules' || name.startsWith('.') ||
+                    name === '$RECYCLE.BIN' || name === 'System Volume Information') continue
+                const full = join(dir, name)
+                if (++dirs > MAX_DIRS) break
+                pushRoot(full)
+                if (out.length >= MAX_RESULTS) break
+                if (depthOf(full) < 2) queue.push(full)
+              }
+            }
+          }
+          sendJson({ ok: true, ws, repos: out })
+          return
+        }
+
         if (op === 'listdir') {
           // Directory browser for the "打开文件夹" picker. Read-only; lists only
           // subdirectories (never files) with a per-entry git marker ("git"

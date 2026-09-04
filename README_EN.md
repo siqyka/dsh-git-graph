@@ -21,7 +21,7 @@ View, browse and manage git repositories right inside the harness conversation �
 ## ✨ Features
 
 - **Commit history graph**: GitHub-style commit list with foldable per-branch groups and branch coloring (local and remote branches each get their own group)
-- **Follows the current session**: shows the git repository of the workspace you are viewing; switching sessions follows automatically. Non-git workspaces show an empty state
+- **Follows the current session (workspace auto-detection)**: automatically resolves the current session's working directory (v0.13 fixes the session-workspace RPC) and shows its git repository; switching sessions follows automatically. Non-git workspaces show an empty state with a 「🖥 Find git repos in the current session directory」 button that shallow-scans the workspace and its subdirectories (v0.13)
 - **📂 Open folder (v0.11)**: not limited to the current session workspace — click "Open" in the top bar (or "Open folder" in the empty state) to browse the disk (drives → folders, with git markers), pick any folder (e.g. a repo B in another workspace) and view its version control; added repos persist, switch via the top dropdown any time, and they survive a page refresh
 - **Branch filtering**: checked = visible, unchecked = fully hidden (empty selection shows an empty list)
 - **Commit details**: commit message, changed files, per-file diffs, compare two commits (Ctrl+click), 📜 file history (every commit touching a file)
