@@ -79,6 +79,13 @@ pnpm install
 
 打开 http://127.0.0.1:3080 ，在任意会话页内点「Git 图谱」标签（位于「轨迹」标签旁）即可查看。
 
+> **权限与来源说明**：本插件会在你授权的目录内执行只读的 `git` 命令（图谱/差异/日志），
+> 写操作（暂存/提交/推送等）均需你在图谱页内逐次确认；自带「自动更新」会联网检查 GitHub
+> 版本并替换插件文件（有备份回滚）。若通过 [DSH STORE](https://dsh.store/) 安装，商城按
+> `user-reviewed` 展示这些能力并逐次确认。逐版本兼容性声明与证据见
+> [docs/compatibility.md](docs/compatibility.md)，发版前可用 `node scripts/check-compat.mjs`
+> 检查是否覆盖官方最新三个 DSH 版本窗口。
+
 ## 🖱️ 使用
 
 | 操作 | 说明 |

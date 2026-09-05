@@ -1,7 +1,8 @@
 {
   "name": "dsh-git-graph",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "DSH plugin: embedded git repository graph visualizer for the DeepSeek Harness web GUI - commit history graph, branch filtering, code diffs, VSCode-style uncommitted changes panel",
+  "license": "MIT",
   "type": "module",
   "main": "index.js",
   "repository": {
@@ -31,7 +32,8 @@
       "dshReleases": {
         "0.1.2-alpha.3": "compatible",
         "0.1.2-alpha.4": "compatible",
-        "0.1.2-alpha.5": "compatible"
+        "0.1.2-alpha.5": "compatible",
+        "0.1.2-rc.1": "compatible"
       }
     }
   }
