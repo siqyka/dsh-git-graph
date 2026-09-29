@@ -2978,7 +2978,7 @@ $("repoSwitch").addEventListener("change", (ev) => {
 });
 
 /* ---- self-update: check GitHub for a newer tag, offer one-click update ---- */
-let UPDATE_STATE = null; // {current, latest, hasUpdate}
+let UPDATE_STATE = null; // {current, latest, hasUpdate, managed}
 async function checkForUpdate(silent) {
   const btn = $("btnUpdate");
   try {
@@ -2988,6 +2988,13 @@ async function checkForUpdate(silent) {
     // keep the version badge in the status bar in sync
     const ver = $("ggVersion");
     if (ver && res.current) ver.textContent = "v" + res.current;
+    if (res.managed === "git") {
+      // Plugin dir is a git checkout (link:/dev mount): never overwrite files
+      // the user owns through git — upgrades go through `git pull`.
+      btn.style.display = "none";
+      if (!silent) alert("插件以 git 工作区形式挂载，请在插件仓库目录执行 git pull 更新（当前 v" + (res.current || "?") + "）");
+      return;
+    }
     if (res.hasUpdate && res.latest) {
       btn.style.display = "";
       btn.textContent = "🔄 新版本 " + res.latest;

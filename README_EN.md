@@ -29,7 +29,7 @@ View, browse and manage git repositories right inside the harness conversation �
 - **Right-click menu**: copy hash/message, view details, 🏷️ tag a commit (rename/delete tags too), 🌿 create a branch from this commit, 🌐 open the GitHub commit page, copy repo path, open in file manager
 - **Remote/branch operations**: top-bar `⬇ Fetch` (git fetch) and `⬆ Push` (git push current branch, confirmed first); branch-group right-click — local branches: 🔄 switch / ⬆ push / 🗑️ delete (merged-only, HEAD protected), remote branches: ⬇ fetch / copy remote branch name
 - **Remote branches always visible**: remote group headers render even when fully synced with a local branch, labelled 「已同步」(synced) or 「已包含」(contained)
-- **Auto-update**: silently checks the latest GitHub tag when the graph opens; when a newer version exists the top bar shows 「🔄 新版本 vX.Y」— one click downloads and swaps the plugin files (old files are backed up, failures roll back automatically), then a restart applies it
+- **Auto-update (degrades by mount type)**: on normal installs it silently checks the latest GitHub tag when the graph opens; when a newer version exists the top bar shows 「🔄 新版本 vX.Y」— one click downloads and swaps the plugin files (old files are backed up, failures roll back automatically), then a restart applies it. When the plugin is mounted from a git checkout (`link:`), the update button hides automatically and the UI suggests `git pull` instead — files owned by git are never overwritten
 - **State memory**: branch filter, group toggles, fold states and theme persist across refreshes (keys unified to `gg2-*` since v0.8; branch groups are expanded by default on first open)
 - **Multi-repo switching**: a dropdown at the top of the graph page switches between repos
 - **Large-repo support**: the commit list loads in pages (200/page + load more)
@@ -40,42 +40,58 @@ View, browse and manage git repositories right inside the harness conversation �
 
 ## 📦 Installation
 
-### 1. Add the plugin to your profile
+### Option 1: one-line install via the official CLI (recommended)
 
-Edit your DSH web profile's `package.json` and add the dependency:
+```bash
+# Install from GitHub
+dsh plugin --profile web add github:1841220388zzzcccxxx-star/dsh-git-graph
 
-```json
-{
-  "dependencies": {
-    "dsh-git-graph": "file:./plugins/git-graph"
-  }
-}
+# Or install from npm (scoped package name, see "Distribution" below)
+dsh plugin --profile web add @1841220388zzzcccxxx-star/dsh-git-graph
 ```
 
-(`plugins/git-graph` is the directory containing this plugin source; adjust the path as needed.)
+Restart `dsh web` afterwards. The command registers the plugin as a profile bundle (`dsh.profile.bundles`) automatically and checks `peerDependencies["@deepseek-ai/dsh"]` against your running DSH — incompatible combinations are rejected with a reason.
 
-### 2. Mount the bundle
+### Option 2: local directory mount (developers / offline)
 
-Add the following to the profile's `cordis.patch.yml`:
+```bash
+dsh plugin --profile web add link:<path to this repository>
+```
+
+`link:` mounts the repository directory directly — after editing code, a `dsh web` restart shows your changes (no file copying).
+
+### Optional: fixed repo allowlist
+
+**No configuration is required by default** — the graph auto-discovers git repositories in the current session workspace, and the "📂 Open" button lets you browse and add any folder's repo on the fly (picks are remembered). To pin an allowlist, add `config` to the plugin row in your profile's `cordis.patch.yml`:
 
 ```yaml
 - insert:
     - id: git-graph
       name: dsh-git-graph
       config:
-        repo: "C:/path/to/your/repo"
-```
-
-> `config.repo` / `config.repos` is an **optional** initial allowlist of repositories the graph panel may open; you can skip it entirely — the "📂 Open" button (v0.11) lets you browse and add any folder's git repo on the fly, and the picks are remembered. Repositories discovered in the session workspace are added automatically at runtime, too.
-
-### 3. Install and restart
-
-```bash
-pnpm install
-# then restart dsh web
+        repo: "C:/path/to/your/repo"   # or repos: [ ... ]
 ```
 
 Open http://127.0.0.1:3080 and select the **Git 图谱** tab in any session.
+
+> **Permissions & provenance**: the plugin runs read-only `git` commands (graph/diff/log)
+> inside directories you authorize; write operations (stage/commit/push…) always ask for
+> your confirmation in the graph page. **Self-update degrades by mount type**: when mounted
+> from a git checkout (`link:`) the one-click update is disabled (so it never rewrites files
+> your git owns) — upgrade with `git pull` in the plugin repository instead; other install
+> shapes keep the GitHub one-click self-update (with backup and rollback). Compatibility
+> declarations and isolated-test evidence live in [docs/compatibility.md](docs/compatibility.md);
+> run `node scripts/check-compat.mjs` before releases to verify coverage of the official
+> latest/next release window.
+
+### Distribution
+
+- **GitHub**: this repository carries the `dsh-plugin` topic; `dsh plugin add github:…` installs directly
+- **npm**: `@1841220388zzzcccxxx-star/dsh-git-graph` (published under the scope from `npm whoami`; run `npm run publish:npm` for the pre-publish check chain)
+
+### Compatibility range
+
+Declared in `package.json`: both `engines.dsh` and `peerDependencies["@deepseek-ai/dsh"]` are `>=0.1.0-rc.6 <0.3.0`. Isolated tests (separate `DSH_HOME`, full add → dump-config → remove cycle) pass on **0.1.7-rc.2** (latest stable track) and **0.2.0-rc.1** (next preview track); evidence in [docs/compatibility.md](docs/compatibility.md).
 
 ## 🖱️ Usage
 
@@ -99,18 +115,23 @@ git-graph/
 ├── index.js          # Server half: git API (graph/branches/workstatus/workfile/diff/...)
 ├── client.js         # Client half: "Git 图谱" session tab
 ├── web/index.html    # The graph page (standalone page inside an iframe)
-├── package.json      # Plugin manifest (dsh.client.inject + bundle patch)
-├── dsh.plugin.json   # Official DSH plugin manifest
-└── cordis.patch.yml  # Profile mount point
+├── package.json      # Plugin manifest (dsh.client + bundle patch + peerDependencies)
+├── cordis.patch.yml  # Profile mount point
+└── scripts/          # check-compat.mjs / publish.mjs / compat-isolated-test.ps1
 ```
 
-After editing, sync to your DSH deployment directory (`node_modules/dsh-git-graph/`):
+Development workflow (single source of truth = this repository, mounted into the profile via `link:`):
 
-```powershell
-.\sync-deploy.ps1 -Dst C:\path\to\your\.dsh\profiles\web\node_modules\dsh-git-graph
+```bash
+# One-time mount (no need to repeat after code changes)
+dsh plugin --profile web add link:<path to this repository>
+
+# After editing
+node --check index.js client.js   # syntax check (same for the web/index.html inline script)
+# Restart dsh web to apply (index.js / client.js changes need a restart; web/index.html only needs a refresh)
 ```
 
-Server (`index.js`) and client (`client.js`) changes require a dsh web restart; `web/index.html` changes take effect after a page refresh. See `AGENTS.md` for full development conventions.
+Release flow: `npm run check:compat` (official window coverage) → `pwsh -File scripts/compat-isolated-test.ps1` (isolated tests on anchor versions) → bump version → `npm run publish:npm` (after scoping the name) → `git commit` → `git tag vX.Y` → push. See `AGENTS.md` for full development conventions.
 
 ## 📄 License
 

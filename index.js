@@ -58,6 +58,22 @@ function localVersion() {
   } catch { return '' }
 }
 
+/* Whether this plugin's own directory lives inside a git work tree (a
+ * `link:`/dev checkout mount). Self-update must not overwrite files the user
+ * owns through git, so in that mode checkupdate reports managed:'git' and the
+ * UI hides the update button in favor of `git pull`. Cached after first call. */
+let gitManagedPromise = null
+function gitManaged() {
+  if (!gitManagedPromise) {
+    gitManagedPromise = new Promise((res) => {
+      execFile('git', ['-C', here, 'rev-parse', '--is-inside-work-tree'], { windowsHide: true }, (err, stdout) => {
+        res(!err && String(stdout).trim() === 'true')
+      })
+    })
+  }
+  return gitManagedPromise
+}
+
 /** Compare dotted versions: 1 if a>b, -1 if a<b, 0 if equal. */
 function cmpVer(a, b) {
   const pa = String(a).replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0)
@@ -558,6 +574,48 @@ export function apply(ctx, config = {}) {
           return
         }
 
+        if (op === 'checkupdate') {
+          // Compare the installed version against the latest GitHub tag.
+          // Read-only; the client decides whether to offer an update.
+          // Even when the network fails we still return the installed
+          // version so the UI can always display it. Handled before the repo
+          // gate (it needs no repository); when the plugin is mounted from a
+          // git checkout the update is always suppressed.
+          const current = localVersion()
+          const managed = (await gitManaged()) ? 'git' : undefined
+          try {
+            const latest = await latestTag()
+            const hasUpdate = !managed && latest ? cmpVer(latest, current) > 0 : false
+            sendJson({ ok: true, current, latest: managed ? '' : latest, hasUpdate, managed })
+          } catch (err) {
+            sendJson({ ok: true, current, latest: '', hasUpdate: false, network: false, managed, error: String((err && err.message) || err) })
+          }
+          return
+        }
+
+        if (op === 'autoupdate') {
+          // Download the given tag from GitHub and swap this plugin's files.
+          // The caller must confirm first; a restart of dsh web is required
+          // afterwards (the running process keeps the old code in memory).
+          // Also repo-independent: handled before the repo gate.
+          if (await gitManaged()) {
+            sendJson({ ok: false, error: 'git-managed' }, 409)
+            return
+          }
+          const tag = url.searchParams.get('tag')
+          if (!tag) {
+            sendJson({ ok: false, error: 'missing-tag' }, 400)
+            return
+          }
+          try {
+            await applyUpdate(tag)
+            sendJson({ ok: true, restart: true })
+          } catch (err) {
+            sendJson({ ok: false, error: String((err && err.message) || err) }, 500)
+          }
+          return
+        }
+
         let repo = url.searchParams.get('repo') || allowed[0]
         const repoNorm = normalize(repo || '')
         if (!repoNorm || !repoAllowed(repoNorm)) {
@@ -762,37 +820,6 @@ export function apply(ctx, config = {}) {
             // Drop the .git suffix and any trailing slash.
             web = web.replace(/\.git\/?$/, '').replace(/\/+$/, '')
             sendJson({ ok: true, web, remote: raw })
-            break
-          }
-          case 'checkupdate': {
-            // Compare the installed version against the latest GitHub tag.
-            // Read-only; the client decides whether to offer an update.
-            // Even when the network fails we still return the installed
-            // version so the UI can always display it.
-            const current = localVersion()
-            try {
-              const latest = await latestTag()
-              sendJson({ ok: true, current, latest, hasUpdate: latest ? cmpVer(latest, current) > 0 : false })
-            } catch (err) {
-              sendJson({ ok: true, current, latest: '', hasUpdate: false, network: false, error: String((err && err.message) || err) })
-            }
-            break
-          }
-          case 'autoupdate': {
-            // Download the given tag from GitHub and swap this plugin's files.
-            // The caller must confirm first; a restart of dsh web is required
-            // afterwards (the running process keeps the old code in memory).
-            const tag = url.searchParams.get('tag')
-            if (!tag) {
-              sendJson({ ok: false, error: 'missing-tag' }, 400)
-              return
-            }
-            try {
-              await applyUpdate(tag)
-              sendJson({ ok: true, restart: true })
-            } catch (err) {
-              sendJson({ ok: false, error: String((err && err.message) || err) }, 500)
-            }
             break
           }
           case 'suggestmsg': {

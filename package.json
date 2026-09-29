@@ -1,6 +1,6 @@
 {
   "name": "dsh-git-graph",
-  "version": "0.13.1",
+  "version": "0.14.0",
   "description": "DSH plugin: embedded git repository graph visualizer for the DeepSeek Harness web GUI - commit history graph, branch filtering, code diffs, VSCode-style uncommitted changes panel",
   "license": "MIT",
   "type": "module",
@@ -9,15 +9,50 @@
     "type": "git",
     "url": "https://github.com/1841220388zzzcccxxx-star/dsh-git-graph.git"
   },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "git",
+    "graph",
+    "visualization"
+  ],
+  "files": [
+    "index.js",
+    "client.js",
+    "web",
+    "cordis.patch.yml",
+    "README.md",
+    "README_EN.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
     "./package.json": "./package.json"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=18",
+    "dsh": ">=0.1.0-rc.6 <0.3.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.0-rc.6 <0.3.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "check:compat": "node scripts/check-compat.mjs",
+    "publish:npm": "node scripts/publish.mjs"
   },
   "dsh": {
+    "manifestVersion": 1,
     "client": {
       "inject": [
         "slots"
@@ -26,15 +61,6 @@
     },
     "bundle": {
       "patch": "./cordis.patch.yml"
-    },
-    "compatibility": {
-      "dsh": "0.0.1-rc.5 || >=0.1.0-rc.6 <0.2.0",
-      "dshReleases": {
-        "0.1.2-alpha.3": "compatible",
-        "0.1.2-alpha.4": "compatible",
-        "0.1.2-alpha.5": "compatible",
-        "0.1.2-rc.1": "compatible"
-      }
     }
   }
 }

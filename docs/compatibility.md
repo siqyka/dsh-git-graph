@@ -1,24 +1,27 @@
 # 适配性与兼容性声明
 
 本文档记录 dsh-git-graph 对 DeepSeek Harness（DSH）各版本的适配策略、逐版本证据、
-API 依赖面与能力披露。规则依据：DSH STORE [registry/README.md](https://github.com/AI-Scarlett/DSH-Store/blob/main/registry/README.md)（目录准入规则）
-与 [automation-policy.json](https://github.com/AI-Scarlett/DSH-Store/blob/main/registry/automation-policy.json)、
-官方 [build-dsh-plugin](https://github.com/AI-Scarlett/build-dsh-plugin) 契约。
+API 依赖面与能力披露。
 
 ## 1. 规则要点（为什么这样维护）
 
 - 官方明示 DSH 处于 developer preview：**可能存在破坏性变更**；稳定公开面为
-  插槽系统（`slots`）、服务注入（`webServer` 等）、清单格式（`dsh.plugin.json` + package.json `dsh` 字段）。
-- DSH STORE 每 8 小时以「官方 npm `@deepseek-ai/dsh` 的 latest + 前两个未弃用发行版」
-  为滚动窗口复检；窗口内**至少 1 个精确 `dshReleases: "compatible"` 记录**才保持
-  approved，全部 unknown/incompatible/缺失 → 自动 `unlisted`（issue #205 场景）。
-- 范围声明（`dsh.compatibility.dsh`）不能替代逐版本精确记录；未声明版本显示 `unknown`。
-- `dshReleases` 键必须是**真实存在的完整 SemVer 发行版**；值只接受
-  `compatible` / `incompatible` / `unknown`。
-- 声明是「来源兼容声明」，**不等于**安装/启动/卸载/回滚验收；`dshOperations`
-  证据另行记录（见下表）。
-- 每次插件改代码 / DSH 出新版本：先跑 `node scripts/check-compat.mjs`，有缺口就
-  在隔离环境实测后补声明、提升插件版号、推送。
+  插槽系统（`slots`）、服务注入（`webServer` 等）、清单格式（package.json `dsh` 字段）。
+- **官方原生兼容闸门（v0.14.0 起采用）**：
+  - `engines.dsh`（顶层，与 `engines.node` 并列）— 作者声明的兼容 SemVer 范围，
+    官方 loader 目前不强制，但插件市场类工具（如 dsh-plugin-manager 的更新检查）会读取；
+  - `peerDependencies["@deepseek-ai/dsh"]` — **强制闸门**：DSH ≥0.2.0 在 profile
+    组合与 `dsh plugin add` preflight 时按此校验，不满足直接拒绝安装 / 启动失败
+    （可被 profile 的 `compatibility.json` 白名单豁免）；
+  - `peerDependenciesMeta` 标记 optional，避免 npm/pnpm 自动安装 peer 本体；
+  - `dsh.manifestVersion: 1` 声明清单格式版本。
+- 本插件两个范围均声明 `>=0.1.0-rc.6 <0.3.0`，锚点版本隔离实测见下表。
+- 历史：v0.13.1 及以前用自建字段 `dsh.compatibility.dshReleases`（AI-Scarlett/DSH-Store
+  目录的逐版本声明约定）。官方 0.2.0 引入原生 peerDependencies 闸门后，该字段
+  已在 v0.14.0 移除，检查脚本迁移为官方窗口语义（latest + next 双轨）。
+- 声明是「来源兼容声明」，**不等于**安装/启动/卸载验收；逐版本证据另行记录（见下表）。
+- 每次插件改代码 / DSH 出新版本：先跑 `node scripts/check-compat.mjs`，有缺口就在
+  隔离环境实测后修正范围、提升插件版号、推送。
 
 ## 2. 逐版本证据矩阵
 
@@ -30,24 +33,33 @@ API 依赖面与能力披露。规则依据：DSH STORE [registry/README.md](htt
 
 | DSH 版本 | 声明 | install | start | uninstall | rollback | 证据日期 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 0.1.2-alpha.3 | compatible | — | — | — | — | 声明于 2026-09-04 |
-| 0.1.2-alpha.4 | compatible | E4（真实 profile 安装并运行） | E4（本机 web GUI 中「Git 图谱」标签加载图谱，v0.13 验证） | — | — | 2026-09-04（运行验证） |
-| 0.1.2-alpha.5 | compatible | E3：隔离 DSH_HOME 安装通过（`dsh plugin --profile web add`，pnpm link） | E3：`--dump-config` 合成树含 `git-graph`（apply 配置生效） | E3：`plugin remove` 后合成树已清理 | — | 2026-09-05 |
-| 0.1.2-rc.1 | compatible | E3：隔离 DSH_HOME 安装通过（`dsh plugin --profile web add`，pnpm link） | E3：`--dump-config` 合成树含 `git-graph`（apply 配置生效） | E3：`plugin remove` 后合成树已清理 | — | 2026-09-05 |
+| 0.1.2-alpha.4 | >=0.1.0-rc.6 <0.3.0 | E4（真实 profile 安装并运行） | E4（本机 web GUI 中「Git 图谱」标签加载图谱，v0.13 验证） | — | — | 2026-09-04（运行验证） |
+| 0.1.2-alpha.5 | 同上 | E3：隔离 DSH_HOME 安装通过（`dsh plugin --profile web add`） | E3：`--dump-config` 合成树含 `git-graph` | E3：`plugin remove` 后合成树已清理 | — | 2026-09-05 |
+| 0.1.2-rc.1 | 同上 | E3：同上 | E3：同上 | E3：同上 | — | 2026-09-05 |
+| 0.1.7-rc.2（npm latest） | 同上 | E3：隔离 DSH_HOME，`dsh plugin add link:<仓库>` 通过 | E3：`--dump-config` 合成树含 `# == dsh-git-graph` | E3：`plugin remove` 后合成树已清理 | — | 2026-09-29 |
+| 0.2.0-rc.1（npm next） | 同上 | E3：同上；add preflight 按 `peerDependencies` 校验通过 | E3：同上 | E3：同上 | — | 2026-09-29 |
+
+另：0.2.0-rc.1 真实 profile E4——`link:` 挂载本仓库后 `dsh web` 启动，`/git-graph/index.html`
+与 `/git-graph/api?op=repos` 返回 200，SPA 启动 payload 含 `dsh-git-graph`（2026-09-29）。
 
 > rollback：插件本体不实现 DSH 进程级回滚；商城安装走 DSH 官方 CLI + 固定 Commit，
 > 回滚/卸载由 DSH-Store 的生命周期管理提供（其规则要求 install/start/uninstall/rollback
 > 四项逐版本证据，缺项保持 unknown）。插件内置自更新（autoupdate）自带备份回滚
 > （`.bak-<ts>` 目录 + 失败恢复），见 README「自动更新」。
 
-### 隔离复测方法（alpha.5 / rc.1）
+### 隔离复测方法
 
 ```powershell
-# scripts/compat-isolated-test.ps1：每个版本独立 DSH_HOME，执行
-#   npm i @deepseek-ai/dsh@<ver> → dsh plugin --profile web add <本仓库> →
-#   dsh --profile web --dump-config（断言包含 git-graph）→ plugin remove → 再断言已清理
-powershell -File scripts/compat-isolated-test.ps1
+# scripts/compat-isolated-test.ps1：每个版本独立 work/node_modules + 独立 DSH_HOME，
+#   npm i @deepseek-ai/dsh@<ver> → dsh plugin --profile web add link:<插件> →
+#   dsh --profile web --dump-config（断言包含 git-graph）→ plugin remove → 再断言已清理。
+# 版本可参数化；需 pwsh 7（PowerShell 5.1 会把无 BOM UTF-8 按 ANSI 解码）。
+pwsh -File scripts/compat-isolated-test.ps1                       # 默认锚点：0.1.7-rc.2 + 0.2.0-rc.1
+pwsh -File scripts/compat-isolated-test.ps1 -Versions 0.2.0-rc.1  # 只测一个版本
 ```
+
+原始日志样例（2026-09-29 两锚点版本全绿）：`%TEMP%\dsh-compat-v0140\run.log`
+（临时目录，重跑脚本会重建；结论摘录保留在上表）。
 
 ## 3. 对 DSH 的 API 依赖面
 
@@ -57,8 +69,9 @@ powershell -File scripts/compat-isolated-test.ps1
 | --- | --- | --- |
 | `webServer` 服务注入 + `register({kind:'prefix'})` | 官方 Host 服务（`dsh-host-webserver`） | `index.js` |
 | `slots` 插槽 + `conversation.view`（`scope: session`，框架注入 `sessionId` props） | 官方插槽系统（`dsh-client-ui-slots`/runner） | `client.js` |
-| `dsh.plugin.json` 清单 + package.json `dsh.client.inject/platform` / `dsh.bundle.patch` | 官方 manifest 契约 | 仓库根 |
-| `engines.node` | STORE 自动批准要求（Node 兼容声明） | `package.json` |
+| package.json `dsh.client{platform,inject}` / `dsh.bundle.patch` / `dsh.manifestVersion` | 官方 manifest 契约（`dsh-package-manifest`） | `package.json` |
+| `engines.dsh` + `peerDependencies["@deepseek-ai/dsh"]` | 官方兼容声明（后者 0.2.0 起强制闸门） | `package.json` |
+| `engines.node` | Node 兼容声明 | `package.json` |
 
 ### 内部面（非稳定契约，均有回落/容错）
 
@@ -84,12 +97,19 @@ powershell -File scripts/compat-isolated-test.ps1
 
 ## 5. 版本节奏
 
-1. 功能改动 → 同步 `package.json` / `dsh.plugin.json` version → `git commit` → `git tag vX.Y`
-2. 每次发版前跑 `node scripts/check-compat.mjs`；有缺口先补 `dshReleases`
-3. DSH 官方新版本发布后：隔离实测（脚本见上）→ 更新本表证据 → 补声明 → 发版
+1. 功能改动 → 同步 `package.json` version → `git commit` → `git tag vX.Y`
+2. 每次发版前跑 `node scripts/check-compat.mjs`（官方 latest + next 发行窗口覆盖检查）；
+   有缺口先修正 `engines.dsh` / `peerDependencies` 范围并隔离实测
+3. DSH 官方新版本发布后：`pwsh -File scripts/compat-isolated-test.ps1 -Versions <新版本>`
+   隔离实测 → 更新本表证据 → 必要时收窄/修正范围 → 发版
+4. npm 发布：`npm run publish:npm`（scope 包名 + 官方 registry，发布前自动跑检查链）
 
 ## 6. 变更历史
 
 - v0.12.0：补齐 `dsh.compatibility`（范围 + alpha.3/4/5 精确声明），恢复 DSH STORE 收录
 - v0.13.0：修复会话工作区识别（session/list RPC 格式）+ 空态一键扫描当前目录仓库
 - v0.13.1：声明覆盖 `0.1.2-rc.1`（官方窗口滚动），新增 `check-compat.mjs` 与本文档
+- v0.14.0：迁移到官方原生兼容声明（`engines.dsh` + `peerDependencies` 强制闸门 + `dsh.manifestVersion: 1`），
+  移除自建 `dsh.compatibility.dshReleases` 与 `dsh.plugin.json`；自更新按挂载形态降级
+  （git 工作区挂载 → `git pull` 提示）；锚点版本 0.1.7-rc.2 / 0.2.0-rc.1 隔离实测通过；
+  准备 npm（scope）+ GitHub topic 双通道发布

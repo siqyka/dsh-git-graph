@@ -1,10 +1,16 @@
-# 隔离 DSH_HOME 兼容性实测：0.1.2-alpha.5 / 0.1.2-rc.1 × dsh-git-graph
+# 隔离 DSH_HOME 兼容性实测：dsh-git-graph × 指定 DSH 版本
 # 每个版本独立 work/node_modules + 独立 DSH_HOME；只读一次性夹具，不碰真实 ~/.dsh。
-# 注意：本脚本需用 PowerShell 7（pwsh）执行（UTF-8 解析中文路径）；
-# Windows PowerShell 5.1 会把无 BOM 的 UTF-8 脚本按 ANSI 解码导致中文路径乱码。
-param([string]$PluginSrc)
+# 用法（需 PowerShell 7 / pwsh，5.1 会把无 BOM UTF-8 按 ANSI 解码导致中文路径乱码）：
+#   pwsh -File scripts/compat-isolated-test.ps1                                  # 默认实测两个锚点版本
+#   pwsh -File scripts/compat-isolated-test.ps1 -Versions 0.2.0-rc.1             # 只测一个版本
+# 实测项：npm 装 dsh → dsh plugin add link:<插件> → dump-config 断言 → 卸载断言。
+# 结果写入 <TEMP>\dsh-compat-v0140\run.log，作为 docs/compatibility.md 的证据。
+param(
+  [string[]]$Versions = @('0.1.7-rc.2', '0.2.0-rc.1'),
+  [string]$PluginSrc
+)
 $ErrorActionPreference = 'Continue'
-$base = Join-Path $env:TEMP 'dsh-compat-v0131'
+$base = Join-Path $env:TEMP 'dsh-compat-v0140'
 Remove-Item $base -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $base -ItemType Directory -Force | Out-Null
 if (-not $PluginSrc) { $PluginSrc = 'D:\桌面\Agent操作文件夹\Git图谱插件_deepseek harness' }
@@ -31,8 +37,8 @@ function Test-Version([string]$ver) {
   npm install "@deepseek-ai/dsh@$ver" --no-audit --no-fund 2>&1 | Select-Object -Last 2 | Add-Content $log
   $bin = Join-Path $work 'node_modules\@deepseek-ai\dsh\lib\bin.js'
   Add-Content $log "npm install exit: $LASTEXITCODE  dsh: $((node $bin --version 2>&1 | Out-String).Trim())"
-  Add-Content $log "-- plugin add --"
-  node $bin plugin --profile web add $plugin 2>&1 | Select-Object -Last 10 | Add-Content $log
+  Add-Content $log "-- plugin add (link:) --"
+  node $bin plugin --profile web add "link:$plugin" 2>&1 | Select-Object -Last 10 | Add-Content $log
   Add-Content $log "add exit: $LASTEXITCODE"
   Add-Content $log "-- dump-config (synthesis assert git-graph) --"
   $dump = node $bin --profile web --dump-config 2>&1 | Out-String
@@ -52,6 +58,5 @@ function Test-Version([string]$ver) {
 # 2) 安全护栏：断言 DSH_HOME 始终在我们的临时目录内
 if (-not ($base.StartsWith($env:TEMP))) { Add-Content $log "ABORT: base not under TEMP"; exit 9 }
 
-Test-Version '0.1.2-alpha.5'
-Test-Version '0.1.2-rc.1'
+foreach ($v in $Versions) { Test-Version $v }
 Add-Content $log "ALL DONE"

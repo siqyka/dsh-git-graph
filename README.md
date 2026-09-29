@@ -31,7 +31,7 @@ DeepSeek Harness（DSH）Web GUI 的嵌入式 Git 仓库图谱可视化插件。
 - **右键菜单**：复制哈希/消息、查看详情、🏷️ 打标签（可改名/删除）、🌿 从提交新建分支、🌐 打开 GitHub 提交页、复制仓库路径、在文件管理器中打开
 - **远程/分支操作**：顶栏 `⬇ 拉取`（git fetch）与 `⬆ 推送`（git push 当前分支，确认后执行）；分支组头右键——本地分支可 🔄 切换 / ⬆ 推送 / 🗑️ 删除（已合并才可删，HEAD 受保护），远程分支可 ⬇ 拉取 / 复制远程分支名
 - **远程分支可见**：远程分支组头始终显示（即使与本地完全同步），并标注「已同步」/「已包含」状态
-- **自动更新**：打开图谱时静默检查 GitHub 最新版本，发现新版本顶栏显示「🔄 新版本 vX.Y」，一键点击自动下载并替换插件文件（自动备份旧版，失败自动回滚），重启后生效
+- **自动更新（按挂载形态降级）**：常规安装时打开图谱静默检查 GitHub 最新版本，发现新版本顶栏显示「🔄 新版本 vX.Y」，一键自动下载并替换插件文件（自动备份旧版，失败自动回滚），重启后生效；以 git 工作区（`link:`）挂载时自动隐藏更新按钮，改为提示 `git pull`，绝不改写 git 管理的文件
 - **状态记忆**：分支过滤、☑ 分组开关、面板/分组折叠状态、主题自动保存，刷新后保留（v0.8 起键统一为 `gg2-*`，首次打开分支默认全部展开）
 - **多仓库切换**：图谱页头部下拉快速切换多个仓库
 - **大仓库优化**：提交列表分页加载（200 条/页 + 加载更多），上万提交也不卡
@@ -42,49 +42,55 @@ DeepSeek Harness（DSH）Web GUI 的嵌入式 Git 仓库图谱可视化插件。
 
 ## 📦 安装
 
-### 1. 把插件加入 profile
+### 方式一：官方 CLI 一键安装（推荐）
 
-编辑你的 DSH web profile 的 `package.json`，添加依赖：
+```bash
+# 从 GitHub 安装
+dsh plugin --profile web add github:1841220388zzzcccxxx-star/dsh-git-graph
 
-```json
-{
-  "dependencies": {
-    "dsh-git-graph": "file:./plugins/git-graph"
-  }
-}
+# 或从 npm 安装（scope 包名，见下方「发布渠道」）
+dsh plugin --profile web add @1841220388zzzcccxxx-star/dsh-git-graph
 ```
 
-（`plugins/git-graph` 为本插件源码所在目录，按实际路径调整。）
+装完重启 `dsh web` 即生效。命令会自动把插件注册进 profile 的 bundle 层（`dsh.profile.bundles`），并按 `peerDependencies["@deepseek-ai/dsh"]` 校验与你本机 DSH 的兼容性——不满足会拒绝安装并给出原因。
 
-### 2. 挂载 bundle
+### 方式二：本地目录直挂（开发者 / 离线）
 
-在 profile 的 `cordis.patch.yml` 中加入：
+```bash
+dsh plugin --profile web add link:<本插件仓库路径>
+```
+
+`link:` 直接挂载仓库目录，改完代码重启 `dsh web` 即可看到效果（无需复制文件）。
+
+### 可选：固定仓库白名单
+
+默认**无需任何配置**——图谱自动发现当前会话工作区中的 git 仓库，也可用图谱页顶栏「📂 打开」浏览并添加任意文件夹的仓库（添加过的仓库会记住）。如需固定白名单，在 profile 的 `cordis.patch.yml` 里为插件行加 `config`：
 
 ```yaml
 - insert:
     - id: git-graph
       name: dsh-git-graph
       config:
-        repo: "C:/path/to/your/repo"
-```
-
-> `config.repo` / `config.repos` 是**可选**的初始可访问仓库白名单；不配置也能用——图谱页顶栏「📂 打开」可随时浏览并添加任意文件夹的 Git 仓库（v0.11），添加过的仓库会记住。运行中被会话工作区发现的仓库也会自动加入可访问集合。
-
-### 3. 安装并重启
-
-```bash
-pnpm install
-# 然后重启 dsh web（或直接使用一键重启脚本）
+        repo: "C:/path/to/your/repo"   # 或 repos: [ ... ] 数组
 ```
 
 打开 http://127.0.0.1:3080 ，在任意会话页内点「Git 图谱」标签（位于「轨迹」标签旁）即可查看。
 
 > **权限与来源说明**：本插件会在你授权的目录内执行只读的 `git` 命令（图谱/差异/日志），
-> 写操作（暂存/提交/推送等）均需你在图谱页内逐次确认；自带「自动更新」会联网检查 GitHub
-> 版本并替换插件文件（有备份回滚）。若通过 [DSH STORE](https://dsh.store/) 安装，商城按
-> `user-reviewed` 展示这些能力并逐次确认。逐版本兼容性声明与证据见
-> [docs/compatibility.md](docs/compatibility.md)，发版前可用 `node scripts/check-compat.mjs`
-> 检查是否覆盖官方最新三个 DSH 版本窗口。
+> 写操作（暂存/提交/推送等）均需你在图谱页内逐次确认。**自更新按挂载形态自动降级**：
+> 以 git 工作区（`link:`）形式挂载时不提供一键自更新（避免改写你 git 管理的文件），
+> 请在插件仓库目录 `git pull` 升级；其他安装形态保留 GitHub 一键自更新（有备份回滚）。
+> 兼容范围声明与隔离实测证据见 [docs/compatibility.md](docs/compatibility.md)，
+> 发版前可用 `node scripts/check-compat.mjs` 检查是否覆盖官方 latest/next 发行窗口。
+
+### 发布渠道
+
+- **GitHub**：本仓库已带 `dsh-plugin` topic，`dsh plugin add github:…` 直装
+- **npm**：`@1841220388zzzcccxxx-star/dsh-git-graph`（以 `npm whoami` 得到的 scope 发布；发布前跑 `npm run publish:npm` 做检查链）
+
+### 兼容范围
+
+声明于 `package.json`：`engines.dsh` 与 `peerDependencies["@deepseek-ai/dsh"]` 均为 `>=0.1.0-rc.6 <0.3.0`。隔离实测（独立 `DSH_HOME`，add → dump-config → remove 全链路）通过版本：**0.1.7-rc.2**（latest 稳定线）与 **0.2.0-rc.1**（next 预览线），证据见 [docs/compatibility.md](docs/compatibility.md)。
 
 ## 🖱️ 使用
 
@@ -109,17 +115,23 @@ git-graph/
 ├── index.js          # 服务端：git API（graph/branches/workstatus/workfile/diff/...）
 ├── client.js         # 客户端插件：会话页「Git 图谱」标签
 ├── web/index.html    # 图谱界面（iframe 内独立页面）
-├── package.json      # 插件清单（dsh.client.inject + bundle patch）
-└── cordis.patch.yml  # profile 挂载点
+├── package.json      # 插件清单（dsh.client + bundle patch + peerDependencies）
+├── cordis.patch.yml  # profile 挂载点
+└── scripts/          # check-compat.mjs / publish.mjs / compat-isolated-test.ps1
 ```
 
-修改后同步到 DSH 部署目录（`node_modules/dsh-git-graph/`）：
+开发工作流（单一真源 = 本仓库，profile 以 `link:` 直挂）：
 
-```powershell
-.\sync-deploy.ps1
+```bash
+# 首次挂载（此后改代码不需要重复此步）
+dsh plugin --profile web add link:<本仓库路径>
+
+# 改动后
+node --check index.js client.js   # 语法检查（web/index.html 内联脚本同法）
+# 重启 dsh web 生效（index.js / client.js 改动需重启；web/index.html 刷新即生效）
 ```
 
-服务端（`index.js`）改动需重启 dsh web；页面（`web/index.html`）改动刷新即生效。
+发版流程：`npm run check:compat`（官方窗口覆盖检查）→ `pwsh -File scripts/compat-isolated-test.ps1`（锚点版本隔离实测）→ 版本号 +1 → `npm run publish:npm`（scope 改名后）→ `git commit` → `git tag vX.Y` → push。
 
 ## 📄 开源协议
 
