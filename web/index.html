@@ -3629,7 +3629,10 @@ async function load(wsOverride) {
     }
     fillFilterMenu();
     SELECTED = null;
-    KEY_IDX = 0;
+    // No keyboard cursor until the user actually presses ↑/↓: seeding it with 0
+    // drew a dashed .kbd focus ring on the first row of every load, which reads
+    // as "this row is selected" when nothing was selected.
+    KEY_IDX = -1;
     setDetailOpen(false);
     REFS_SIG = null;   // full load: let the next poll re-baseline
     render();
