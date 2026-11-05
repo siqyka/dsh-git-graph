@@ -33,6 +33,7 @@ const PREFS_FILE = join(STATE_DIR, 'prefs.json')
 const PREFS_MAX_BYTES = 256 * 1024
 const PREFS_ALLOWED_KEYS = new Set([
   'gg2-bfilter', 'gg2-wdshow', 'gg2-wdfolded', 'gg2-wdgroupfolded', 'gg2-brfolded', 'gg2-theme',
+  'gg2-datefrom', 'gg2-dateto', 'gg2-flat', 'gg2-flat-reset',
 ])
 
 function readPrefs() {
@@ -930,7 +931,13 @@ export function apply(ctx, config = {}) {
             const skip = Math.max(0, parseInt(url.searchParams.get('skip') || '0', 10) || 0)
             // total the client already knows from an earlier page (0 = unknown)
             const knownTotal = Math.max(0, parseInt(url.searchParams.get('total') || '0', 10) || 0)
-            const args = ['log', '--all', '--topo-order', '--date=iso-strict',
+            // Ordering. `topo` (default) keeps each branch's commits together,
+            // which is what the grouped view wants. `date` interleaves branches
+            // strictly by commit date — the flat view asks for this so the
+            // timeline reads chronologically, at the cost of a branch's commits
+            // being split across the list.
+            const order = url.searchParams.get('order') === 'date' ? '--date-order' : '--topo-order'
+            const args = ['log', '--all', order, '--date=iso-strict',
               '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%d']
             if (skip > 0) args.push('--skip=' + skip)
             if (limit > 0) args.push('-n', String(limit))

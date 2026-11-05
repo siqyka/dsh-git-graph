@@ -239,6 +239,46 @@
   }
   header input#searchBox:focus { border-color: var(--accent); }
   header input#searchBox::placeholder { color: var(--text3); }
+  /* date range popover */
+  .dateWrap { position: relative; }
+  #btnDate {
+    height: 28px; padding: 0 10px;
+    border: 1px solid var(--border); border-radius: 7px;
+    background: var(--bg3); color: var(--text);
+    cursor: pointer; font-size: 12px; white-space: nowrap;
+  }
+  #btnDate:hover { border-color: var(--text3); background: var(--bg4); }
+  #btnDate.on { border-color: var(--accent); color: var(--accent); }
+  #dateMenu {
+    display: none; position: absolute; top: 32px; right: 0; z-index: 30;
+    min-width: 240px; padding: 10px;
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 10px 34px rgba(0,0,0,.45);
+  }
+  #dateMenu.show { display: block; }
+  #dateMenu .dm-row { margin-bottom: 8px; }
+  #dateMenu .dm-row label {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--text2); white-space: nowrap;
+  }
+  #dateMenu input[type=date] {
+    flex: 1; min-width: 0; height: 26px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg3); color: var(--text);
+    padding: 0 6px; font-size: 12px; outline: none;
+    color-scheme: dark;
+  }
+  html.gg-light #dateMenu input[type=date] { color-scheme: light; }
+  #dateMenu input[type=date]:focus { border-color: var(--accent); }
+  #dateMenu .dm-hint { font-size: 10.5px; color: var(--text3); margin: 2px 0 8px; }
+  #dateMenu .dm-foot { display: flex; gap: 8px; justify-content: flex-end; }
+  #dateMenu .dm-foot button {
+    height: 26px; padding: 0 12px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg3); color: var(--text); cursor: pointer; font-size: 12px;
+  }
+  #dateMenu .dm-foot button:hover { border-color: var(--text3); }
+  #dateMenu .dm-foot button.primary { background: var(--accent); border-color: var(--accent); color: #04260f; font-weight: 600; }
   /* filter menu lives in .filterWrap; the old select rule is removed */
   .filterWrap { position: relative; }
   /* directory picker removed (manual repo selection dropped) */
@@ -249,6 +289,15 @@
     cursor: pointer; font-size: 12px; white-space: nowrap;
   }
   #btnFilter:hover { border-color: var(--text3); background: var(--bg4); }
+  /* view toggle: becomes "accent" when flat mode is on */
+  #btnFlat {
+    height: 28px; padding: 0 10px;
+    border: 1px solid var(--border); border-radius: 7px;
+    background: var(--bg3); color: var(--text);
+    cursor: pointer; font-size: 12px; white-space: nowrap;
+  }
+  #btnFlat:hover { border-color: var(--text3); background: var(--bg4); }
+  #btnFlat.on { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,.12); }
   #filterMenu {
     display: none; position: absolute; top: 32px; right: 0; z-index: 30;
     min-width: 200px; max-height: 340px; overflow: auto;
@@ -337,7 +386,7 @@
   /* --- commit list (GitHub-style) --- */
   /* transparent: the themed background + #ggDeco ambient layer show through */
   #graphWrap { flex: 1; overflow: auto; position: relative; }
-  #commitList { padding: 10px 0 24px; min-width: 520px; }
+  #commitList { padding: 10px 0 24px; min-width: 520px; position: relative; }
   .cl-row {
     display: flex; align-items: stretch;
     padding: 0; cursor: pointer; position: relative;
@@ -346,14 +395,22 @@
   .cl-row.sel { background: rgba(88,166,255,.1); }
   .cl-row.kbd { outline: 1px dashed var(--accent); outline-offset: -1px; }
   .cl-row.searchHit .cl-dot { outline: 2px solid #f0b429; outline-offset: 1px; }
-  .cl-graph { width: 40px; flex: none; position: relative; }
-  .cl-graph::before {
-    content: ''; position: absolute; left: 19px; top: 0; bottom: 0;
-    width: 2px; opacity: .4; pointer-events: none;
+  /* searchHit is no longer used to mark matches (search now filters rows
+     instead of tinting them); the rule stays for the compare/highlight path. */
+  /* Graph gutter: the lane SVG is drawn once for the whole list (not per row),
+     so `cl-graph` is just a spacer that reserves the horizontal room. */
+  .cl-graph { flex: none; position: relative; }
+  #laneSvg {
+    position: absolute; left: 0; top: 0;
+    pointer-events: none; z-index: 1; overflow: visible;
   }
-  .cl-row.first .cl-graph::before { top: 50%; }
-  .cl-row.last .cl-graph::before { bottom: 50%; }
-  .cl-row.solo .cl-graph::before { display: none; }
+  #laneSvg .lane-line { fill: none; stroke-width: 2.4; stroke-linecap: round; }
+  #laneSvg .lane-shadow { fill: none; stroke: var(--bg); stroke-width: 5; stroke-linecap: round; opacity: .95; }
+  #laneSvg .lane-node { stroke: var(--bg); stroke-width: 2.5; }
+  #laneSvg .lane-node.head { stroke: var(--green); stroke-width: 2.5; }
+  #laneSvg .lane-node.sel { stroke: #f0b429; stroke-width: 3; }
+  #laneSvg .lane-hit { fill: transparent; cursor: pointer; pointer-events: all; }
+  #laneSvg .lane-hit:hover + .lane-node { stroke-width: 3.4; }
   .cl-dot {
     position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
     width: 12px; height: 12px; border-radius: 50%;
@@ -365,6 +422,9 @@
   .cl-msg {
     font-size: 13px; font-weight: 600; color: var(--text);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    /* Takes the remaining width so a long subject still ellipsises after the
+       ref pills, which are now rendered first and must keep their size. */
+    flex: 1 1 auto; min-width: 0;
   }
   .cl-refs { display: inline-flex; gap: 5px; flex: none; }
   .cl-ref {
@@ -827,6 +887,23 @@
   <span class="spacer"></span>
   <input id="searchBox" type="text" placeholder="搜索提交（消息/作者/哈希）…">
   <span id="searchCount"></span>
+  <div class="dateWrap">
+    <button id="btnDate" title="按提交日期筛选">📅 日期</button>
+    <div id="dateMenu">
+      <div class="dm-row">
+        <label>从 <input type="date" id="dateFrom"></label>
+      </div>
+      <div class="dm-row">
+        <label>到 <input type="date" id="dateTo"></label>
+      </div>
+      <div class="dm-hint">只填一端 = 单侧边界；都空 = 不限时间</div>
+      <div class="dm-foot">
+        <button id="dateClear">清除</button>
+        <button id="dateApply" class="primary">应用</button>
+      </div>
+    </div>
+  </div>
+  <button id="btnFlat" title="切换视图：平铺（泳道连续）/ 按分支分组">▤ 平铺</button>
   <div class="filterWrap">
     <button id="btnFilter" title="选择显示哪些分支">☑ 分支过滤</button>
     <div id="filterMenu">
@@ -856,7 +933,6 @@
       <label><input type="radio" name="ggTheme" value="tech"> 🤖 科技</label>
     </div>
   </div>
-  <span class="hint">滚轮上下滚动 · ↑↓ 导航 · 右键菜单 · Ctrl+/ 快捷键</span>
 </header>
 <div id="statsBar"></div>
 <div id="main">
@@ -1052,7 +1128,6 @@ function branchColorOf(hash) {
 
 const $ = (id) => document.getElementById(id);
 const byHash = () => new Map(COMMITS.map((c) => [c.hash, c]));
-let CACHE_LAYOUT = null; // {laneOf, laneCount} refreshed on each render
 
 /* ===================== theme (8 style presets, ported from 拾光记) ===================== */
 // themePref: 'auto' | 'dark' | 'light' | 'sakura' | 'ocean' | 'forest' | 'night' | 'candy' | 'business' | 'starry' | 'tech'
@@ -1213,7 +1288,14 @@ async function api(op, extra = {}) {
   const p = new URLSearchParams();
   p.set("op", op);
   if (REPO) p.set("repo", REPO);
-  for (const [k, v] of Object.entries(extra)) {
+  // Graph fetches inherit the ordering of the current view unless the caller
+  // pinned one explicitly. Injected here rather than at each call site so the
+  // first page, "load more", and the light reload can never disagree — a
+  // mismatch would splice two different orderings into one list.
+  const params = (op === "graph" && extra.order === undefined)
+    ? { order: FLAT_MODE ? "date" : "topo", ...extra }
+    : extra;
+  for (const [k, v] of Object.entries(params)) {
     if (Array.isArray(v)) for (const item of v) p.append(k, item);
     else if (v !== undefined && v !== null && v !== "") p.set(k, v);
   }
@@ -1373,10 +1455,37 @@ function visibleSet() {
 /* ===== branch-group rows: each branch (incl. the HEAD mainline) gets a foldable group header ===== */
 let BRANCH_FOLDED = new Set(loadStored("gg2-brfolded", [])); // refnames of collapsed branch groups
 let BRANCH_FOLD_DEFAULTED = false; // one-time: fold every branch group on very first load
+/* Flat view: every commit on one continuous timeline, no branch group headers.
+ * Default OFF — the grouped view is the primary way to read the history ("what
+ * is on this branch"). Flat mode is the opt-in view that comes with the lane
+ * graph, because lanes can only stay continuous when nothing splits the rows. */
+let FLAT_MODE = loadStored("gg2-flat", false);
+/* Honours a stored value from an earlier build of this feature: flat used to be
+ * the default while it was being built, so a stale `true` would silently keep the
+ * lane view on. The flag is separate from `gg2-flat` so "the user chose flat" can
+ * be told apart from "flat was only ever the development default". */
+const FLAT_DEFAULT_MIGRATED = loadStored("gg2-flat-reset", false);
+function markFlatMigrationDone() {
+  saveStored("gg2-flat-reset", true);
+  prefsSync({ "gg2-flat-reset": true });
+}
+
 function buildRows(vis) {
   const rows = []; // {type:'commit', hash} | {type:'head', refname, name, tip, count, head?}
   const seen = new Set();
   const map = byHash();
+
+  // Flat mode: COMMITS is already in topo order, so emit it as-is. Still apply
+  // the branch filter (vis) — flat means "no grouping", not "no filtering".
+  if (FLAT_MODE) {
+    for (const c of COMMITS) {
+      if (!map.has(c.hash)) continue;
+      if (vis && !vis.has(c.hash)) continue;
+      rows.push({ type: "commit", hash: c.hash });
+    }
+    return rows;
+  }
+
   const headB = BRANCHES.find((b) => b.head) || BRANCHES.find((b) => b.kind === "local");
   // With an active branch filter, a branch whose tip is not visible must not
   // mark its commits as seen — otherwise a visible branch that shares those
@@ -1469,6 +1578,131 @@ function toggleBranchGroups() {
   render();
 }
 
+/* ---- lane graph geometry ----------------------------------------------------
+ * Spacing tuned against a real 4-lane repo: rows are ~53px tall, so 30px per
+ * lane keeps the S-curves gently sloped instead of near-vertical. The gutter
+ * grows with the lane count and a single-lane repo still gets a slim gutter.
+ */
+const LANE_STEP = 30;
+const LANE_PAD = 22;
+function graphGutterWidth() {
+  const layout = ensureLayout();
+  return Math.max(56, LANE_PAD * 2 + Math.max(1, layout.laneCount - 1) * LANE_STEP + 8);
+}
+
+/** Draw lanes + nodes for every visible commit row as ONE svg overlay.
+ *  `rowEls` maps commit hash -> the row element, so the vertical positions come
+ *  from the browser's real layout (row heights can differ when a message wraps
+ *  or the detail panel pushes things around). */
+function renderLaneGraph(list, rowEls) {
+  const old = list.querySelector("#laneSvg");
+  if (old) old.remove();
+  // Grouped mode has no gutter and no continuous timeline, so there is nothing
+  // to draw. Bail out before touching layout: this also keeps `ensureLayout`
+  // (a full O(n) pass) from running for a graph that will not be shown.
+  if (!FLAT_MODE) return;
+  if (!rowEls.size) return;
+
+  const layout = ensureLayout();
+  const width = graphGutterWidth();
+  const listRect = list.getBoundingClientRect();
+  const color = (i) => LANE_COLORS[i % LANE_COLORS.length];
+
+  // node centre in list-local coordinates
+  const nodePos = new Map();   // row index -> {x, y, hash}
+  for (const node of layout.nodes) {
+    const el = rowEls.get(node.hash);
+    if (!el) continue;                       // filtered out or not rendered
+    const r = el.getBoundingClientRect();
+    if (!r.height) continue;
+    nodePos.set(node.row, {
+      x: LANE_PAD + node.lane * LANE_STEP,
+      y: r.top - listRect.top + r.height / 2,
+      hash: node.hash,
+      lane: node.lane,
+      colour: node.colour,
+    });
+  }
+  if (!nodePos.size) return;
+
+  const height = list.scrollHeight;
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.id = "laneSvg";
+  svg.setAttribute("width", width);
+  svg.setAttribute("height", height);
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+  // --- edges: each edge joins a row to the NEXT row, so y1/y2 come from the
+  // two neighbouring nodes. Edges whose endpoints are off-screen (a row hidden
+  // by a filter) are skipped rather than drawn across the gap.
+  for (const e of layout.edges) {
+    const a = nodePos.get(e.row);
+    const b = nodePos.get(e.row + 1);
+    if (!a || !b) continue;
+    const x1 = LANE_PAD + e.fromLane * LANE_STEP;
+    const x2 = LANE_PAD + e.toLane * LANE_STEP;
+    const y1 = a.y;
+    const y2 = b.y;
+    let d;
+    if (x1 === x2) {
+      d = `M ${x1} ${y1} L ${x2} ${y2}`;
+    } else {
+      // Smooth S-curve: the horizontal move happens near the vertical midpoint,
+      // which is what makes a fork read as "leaving the lane" rather than as a
+      // diagonal slash. Control points at 50% keep both ends tangent-vertical.
+      const span = y2 - y1;
+      const curve = Math.max(8, span * 0.5);
+      d = `M ${x1} ${y1} C ${x1} ${y1 + curve}, ${x2} ${y2 - curve}, ${x2} ${y2}`;
+    }
+    const shadow = document.createElementNS(NS, "path");
+    shadow.setAttribute("class", "lane-shadow");
+    shadow.setAttribute("d", d);
+    svg.appendChild(shadow);
+
+    const line = document.createElementNS(NS, "path");
+    line.setAttribute("class", "lane-line");
+    line.setAttribute("d", d);
+    line.setAttribute("stroke", color(e.colour));
+    if (e.missingParent) line.setAttribute("stroke-dasharray", "3 3");
+    svg.appendChild(line);
+  }
+
+  // --- nodes on top of the edges
+  for (const [, p] of nodePos) {
+    const c = byHash().get(p.hash);
+    const isHead = c && c.refs.some((r) => r.head);
+    const hit = document.createElementNS(NS, "circle");
+    hit.setAttribute("class", "lane-hit");
+    hit.setAttribute("cx", p.x);
+    hit.setAttribute("cy", p.y);
+    hit.setAttribute("r", "10");
+    hit.dataset.hash = p.hash;
+    hit.addEventListener("click", (ev) => { ev.stopPropagation(); selectCommit(p.hash); });
+    svg.appendChild(hit);
+
+    const node = document.createElementNS(NS, "circle");
+    node.setAttribute("class", "lane-node" + (isHead ? " head" : "") + (SELECTED === p.hash ? " sel" : ""));
+    node.setAttribute("cx", p.x);
+    node.setAttribute("cy", p.y);
+    node.setAttribute("r", SELECTED === p.hash ? "6.5" : "4.8");
+    node.setAttribute("fill", isHead ? "var(--bg2)" : color(p.colour));
+    if (isHead) node.setAttribute("stroke", color(p.colour));
+    svg.appendChild(node);
+  }
+
+  list.appendChild(svg);
+}
+
+/* ---- branch tips at the end of each lane ------------------------------------
+ * Where a branch's history leaves the visible list, pin its name to that point
+ * in the gutter. Without this the labels only exist inline on the row that
+ * happens to carry the ref, so a branch whose tip scrolled far away is
+ * invisible — and in flat mode the tip row is often not where the eye is.
+ *
+ * Rendered as absolutely-positioned HTML (not SVG text) so the pills reuse the
+ * normal .cl-ref styling and stay crisp at any zoom.
+ */
 function render() {
   BRANCH_COLOR_CACHE = null;
   const map = byHash();
@@ -1481,25 +1715,68 @@ function render() {
   const kbdHash = KEY_IDX >= 0 && KEY_IDX < COMMITS.length ? COMMITS[KEY_IDX].hash : null;
   const commitRows = [];
   let prevCommitEl = null;
+  let pendingHead = null;   // group header waiting for its first surviving commit
+  const commitRowEls = new Map();   // hash -> row element (for lane geometry)
   const firstCommitEl = null;
 
   // gather visible commit hashes in row order (for keyboard nav + line joining)
   const visibleCommits = ROWS.filter((r) => r.type === "commit" && !(vis && !vis.has(r.hash)) && !(hlSet && !hlSet.has(r.hash)));
+
+  // Pre-compute, per branch group, how many of its commits survive the filters.
+  // This cannot walk ROWS: buildRows() omits commit rows for collapsed groups,
+  // so a filtered match hiding inside a collapsed group would be invisible here
+  // and the header (the only thing on screen) would be dropped. Walk each
+  // branch's first-parent chain directly instead.
+  // Counted per branch, NOT deduplicated across branches: a local branch and its
+  // remote twin reach the same commits, and both headers should stay visible.
+  const groupCounts = new Map();   // refname -> surviving commit count
+  if (filtersActive()) {
+    for (const b of BRANCHES) {
+      if (b.kind !== "local" && b.kind !== "remote") continue;
+      if (vis && !vis.has(b.sha)) continue;
+      let n = 0;
+      let cur = b.sha;
+      const local = new Set();
+      while (cur && map.has(cur) && !local.has(cur)) {
+        local.add(cur);
+        if (passesFilters(map.get(cur))) n++;
+        cur = map.get(cur).parents[0] || null;
+      }
+      groupCounts.set(b.refname, n);
+    }
+  }
 
   for (let i = 0; i < ROWS.length; i++) {
     const r = ROWS[i];
     if (r.type === "head") {
       // hide the whole group when its branch is filtered out
       if (vis && !vis.has(r.tip)) continue;
+      if (filtersActive()) {
+        // Show the header only when this group still has matching commits.
+        // When expanded, the first surviving commit emits it (pendingHead) so
+        // it stays attached to its rows; when collapsed there are no commit
+        // rows at all, so emit it here.
+        if ((groupCounts.get(r.refname) || 0) === 0) continue;
+        if (BRANCH_FOLDED.has(r.refname)) {
+          list.appendChild(buildHeadRow(r, vis, hlSet));
+        } else {
+          pendingHead = pendingHead || r;
+        }
+        continue;
+      }
       list.appendChild(buildHeadRow(r, vis, hlSet));
       continue;
     }
     const c = map.get(r.hash);
     if (!c) continue;
+    if (!passesFilters(c)) continue;          // search / time range: hide it
     const hidden = (vis && !vis.has(c.hash)) || (hlSet && !hlSet.has(c.hash));
     if (hidden) continue;
+    // first surviving commit of a group: emit its header now
+    if (pendingHead) { list.appendChild(buildHeadRow(pendingHead, vis, hlSet)); pendingHead = null; }
     const row = buildCommitRow(c, hidden, kbdHash === c.hash, vis, hlSet);
     list.appendChild(row);
+    commitRowEls.set(c.hash, row);
     commitRows.push(row);
     if (prevCommitEl) prevCommitEl.classList.remove("last");
     row.classList.add("last");
@@ -1512,11 +1789,32 @@ function render() {
     if (commitRows.length === 1) row.classList.add("solo");
   }
 
-  // Empty result from the branch filter: say so explicitly and offer a way
-  // back. Checking `vis.size === 0` is not enough — hiding the checked-out
-  // branch usually leaves other tips in the set while every commit they reach
-  // is deduplicated away, so the list ends up empty with a non-empty vis.
-  if (FILTER === "multi" && commitRows.length === 0) {
+  // Draw the lane graph once over the whole list. Runs after the rows are in the
+  // DOM because the geometry is read back from their real positions.
+  renderLaneGraph(list, commitRowEls);
+
+  // Empty result: distinguish "branch filter hid everything" from "search/date
+  // filter matched nothing", because the way back differs.
+  //
+  // commitRows === 0 alone does NOT mean "nothing to show": with every group
+  // collapsed the list legitimately holds only headers, and a filtered view may
+  // still have matching commits hidden inside collapsed groups. Flat mode has no
+  // collapsed groups, so there 0 rows really does mean empty.
+  //
+  // matchingTotal comes from groupCounts, which only exists in grouped mode;
+  // flat mode counts the surviving commits directly.
+  const anyCollapsed = !FLAT_MODE && BRANCHES.some(
+    (b) => (b.kind === "local" || b.kind === "remote") && BRANCH_FOLDED.has(b.refname),
+  );
+  const matchingTotal = filtersActive()
+    ? (FLAT_MODE
+        ? ROWS.filter((r) => r.type === "commit").length
+        : [...groupCounts.values()].reduce((a, b) => a + b, 0))
+    : null;
+  const nothingToShow = filtersActive()
+    ? matchingTotal === 0
+    : (commitRows.length === 0 && !anyCollapsed);
+  if (nothingToShow && FILTER === "multi") {
     const hint = document.createElement("div");
     hint.className = "cl-filter-empty";
     hint.style.cssText = "color:var(--text3);text-align:center;padding:26px 12px 18px;font-size:12.5px;line-height:1.9";
@@ -1533,6 +1831,25 @@ function render() {
       for (const b of document.querySelectorAll(".fBranch")) b.checked = true;
       applyFilter();
     });
+    hint.appendChild(btn);
+    list.appendChild(hint);
+  } else if (nothingToShow && filtersActive()) {
+    // Search / time range excluded every loaded commit.
+    const hint = document.createElement("div");
+    hint.className = "cl-filter-empty";
+    hint.style.cssText = "color:var(--text3);text-align:center;padding:26px 12px 18px;font-size:12.5px;line-height:1.9";
+    const msg = document.createElement("div");
+    const bits = [];
+    if (SEARCH) bits.push(`关键词「${SEARCH}」`);
+    if (DATE_FROM && DATE_TO) bits.push(`${DATE_FROM} ~ ${DATE_TO}`);
+    else if (DATE_FROM) bits.push(`${DATE_FROM} 之后`);
+    else if (DATE_TO) bits.push(`${DATE_TO} 之前`);
+    msg.textContent = `没有符合 ${bits.join(" + ")} 的提交`;
+    hint.appendChild(msg);
+    const btn = document.createElement("button");
+    btn.textContent = "清除筛选";
+    btn.style.cssText = "margin-top:10px;height:28px;padding:0 16px;border:1px solid var(--border);border-radius:7px;background:var(--bg3);color:var(--text);cursor:pointer;font-size:12px";
+    btn.addEventListener("click", clearFilters);
     hint.appendChild(btn);
     list.appendChild(hint);
   }
@@ -1673,30 +1990,29 @@ function buildCommitRow(c, hidden, isKbd, vis, hlSet) {
   const row = document.createElement("div");
   row.className = "cl-row"
     + (SELECTED === c.hash ? " sel" : "")
-    + (isKbd ? " kbd" : "")
-    + (SEARCH && matches(c) ? " searchHit" : "");
+    + (isKbd ? " kbd" : "");
   row.dataset.hash = c.hash;
   const color = branchColorOf(c.hash);
 
-  const graph = document.createElement("div");
-  graph.className = "cl-graph";
-  graph.style.setProperty("--line-color", color);
-  const dot = document.createElement("span");
-  dot.className = "cl-dot";
-  dot.style.background = color;
-  if (c.refs.some((r) => r.head)) dot.style.boxShadow = "0 0 0 2px var(--green)";
-  graph.appendChild(dot);
-  row.appendChild(graph);
+  // Lane gutter exists ONLY in flat mode: that is where one continuous SVG is
+  // drawn across the whole list. In grouped mode the rows are split by branch
+  // headers, so a lane drawing would necessarily break at every header — the
+  // user asked for no graph there at all, rather than a broken-looking one.
+  if (FLAT_MODE) {
+    const graph = document.createElement("div");
+    graph.className = "cl-graph";
+    graph.style.width = graphGutterWidth() + "px";
+    row.appendChild(graph);
+  }
 
   const body = document.createElement("div");
   body.className = "cl-body";
   const line1 = document.createElement("div");
   line1.className = "cl-line1";
-  const msg = document.createElement("span");
-  msg.className = "cl-msg";
-  msg.textContent = c.subject || "";
-  msg.title = c.subject || "";
-  line1.appendChild(msg);
+  // Refs come FIRST: a branch/tag label is the shortest, most scannable part of
+  // the row, so putting it at a fixed left position makes the column readable at
+  // a glance. Trailing them after the subject pushed them to wherever the
+  // message happened to end, which is far from the eye's left-to-right scan.
   if (c.refs.length) {
     const refs = document.createElement("span");
     refs.className = "cl-refs";
@@ -1709,6 +2025,11 @@ function buildCommitRow(c, hidden, isKbd, vis, hlSet) {
     }
     line1.appendChild(refs);
   }
+  const msg = document.createElement("span");
+  msg.className = "cl-msg";
+  msg.textContent = c.subject || "";
+  msg.title = c.subject || "";
+  line1.appendChild(msg);
   body.appendChild(line1);
   const line2 = document.createElement("div");
   line2.className = "cl-line2";
@@ -1805,12 +2126,58 @@ function computeMainline(map) {
 }
 
 function matches(c) {
-  if (!SEARCH) return false;
+  if (!SEARCH) return true;   // no query = everything matches
   const q = SEARCH.toLowerCase();
   return (c.subject || "").toLowerCase().includes(q)
     || (c.author || "").toLowerCase().includes(q)
     || c.hash.toLowerCase().includes(q)
     || (c.email || "").toLowerCase().includes(q);
+}
+
+/* ---- date range filter -----------------------------------------------------
+ * A real date interval rather than a rolling "last N days" preset: the user
+ * picks a start and/or an end date. Either side may be empty (open-ended), and
+ * both empty means "no time limit". Dates are stored as plain YYYY-MM-DD so a
+ * saved filter stays meaningful, while comparisons happen on local day
+ * boundaries — a commit at 23:50 on the end date still belongs to that day. */
+let DATE_FROM = loadStored("gg2-datefrom", "");   // "" | "YYYY-MM-DD"
+let DATE_TO = loadStored("gg2-dateto", "");       // "" | "YYYY-MM-DD"
+
+/** Milliseconds for the start of a local day (00:00:00.000). */
+function dayStart(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || "");
+  if (!m) return NaN;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0).getTime();
+}
+/** Milliseconds for the end of a local day (23:59:59.999), so the whole day counts. */
+function dayEnd(ymd) {
+  const s = dayStart(ymd);
+  return Number.isNaN(s) ? NaN : s + 86400e3 - 1;
+}
+function withinDateRange(c) {
+  if (!DATE_FROM && !DATE_TO) return true;
+  const t = Date.parse(c.date || "");
+  if (!Number.isFinite(t)) return true;            // unparsable date: don't hide it
+  if (DATE_FROM) {
+    const lo = dayStart(DATE_FROM);
+    if (Number.isFinite(lo) && t < lo) return false;
+  }
+  if (DATE_TO) {
+    const hi = dayEnd(DATE_TO);
+    if (Number.isFinite(hi) && t > hi) return false;
+  }
+  return true;
+}
+
+/** Single source of truth for "should this commit be shown?".
+ *  Search and the date range are *filters* (non-matching commits are hidden),
+ *  not highlights — a query that merely tints rows leaves the user scrolling
+ *  through everything they did not ask for. */
+function passesFilters(c) {
+  return matches(c) && withinDateRange(c);
+}
+function filtersActive() {
+  return Boolean(SEARCH) || Boolean(DATE_FROM) || Boolean(DATE_TO);
 }
 
 function renderLegend() {
@@ -1848,9 +2215,194 @@ function renderLegend() {
 /* ===================== (branch tree removed: merged into the graph view;
  * branch listing/filtering lives in the ☑ 分支过滤 menu) ===================== */
 
-function getLaneOf(hash) {
-  return CACHE_LAYOUT ? (CACHE_LAYOUT.laneOf.get(hash) ?? 0) : 0;
+/* ===================== lane layout (real git graph) =====================
+ * Ported from the "reserved point" strategy used by VS Code Git Graph (and
+ * implemented the same way in WhitePlusMS/dsh-git-graph). A branch owns a
+ * continuous path down its own lane; a merge path reuses the point already
+ * reserved by its target parent branch. Without reservations unrelated lanes
+ * shift diagonally on every following row, which is what makes naive lane
+ * assignment look wrong.
+ *
+ * Pure function: commits in -> { nodes, edges, laneCount } out. No DOM access,
+ * so it can be unit-tested and reused by any renderer.
+ *
+ * `missingParent` marks an edge whose parent is outside the loaded window
+ * (pagination!). The renderer draws those dashed instead of implying the
+ * history ends there.
+ */
+const LANE_NULL = -1;
+
+function layoutGraph(commits) {
+  const index = new Map();
+  commits.forEach((c, i) => index.set(c.hash, i));
+
+  // Vertex state: parents resolved to indices, plus booking slots per lane.
+  const vertices = commits.map((c, id) => ({
+    id,
+    commit: c,
+    parents: (c.parents || []).map((p) => (index.has(p) ? index.get(p) : LANE_NULL)),
+    connections: [],   // lane -> { target, colour } reserved by a passing edge
+    branch: undefined, // colour id once claimed
+    lane: 0,
+    nextLane: 0,
+    nextParent: 0,
+  }));
+
+  const branches = [];  // { colour, edges[], end }
+  const branchEnds = []; // colour -> last row it was used on
+
+  const nextPointOf = (v) => ({ lane: v.nextLane, row: v.id });
+  const pointOf = (v) => ({ lane: v.lane, row: v.id });
+
+  const connectPoint = (v, target, colour) => {
+    for (let lane = 0; lane < v.connections.length; lane++) {
+      const c = v.connections[lane];
+      if (c && c.target === target && c.colour === colour) return { lane, row: v.id };
+    }
+    return undefined;
+  };
+  const reservePoint = (v, lane, target, colour) => {
+    if (lane !== v.nextLane) return;
+    v.nextLane += 1;
+    v.connections[lane] = { target, colour };
+  };
+  const addEdge = (br, from, to, missingParent) => {
+    br.edges.push({
+      fromLane: from.lane,
+      toLane: to.lane,
+      row: from.row,
+      colour: br.colour,
+      missingParent: Boolean(missingParent),
+    });
+  };
+  const availableColour = (startAt) => {
+    for (let colour = 0; colour < branchEnds.length; colour++) {
+      const end = branchEnds[colour];
+      if (end !== undefined && startAt > end) return colour;
+    }
+    branchEnds.push(0);
+    return branchEnds.length - 1;
+  };
+
+  function determinePath(startAt) {
+    let row = startAt;
+    let vertex = vertices[row];
+    if (!vertex) return;
+
+    let parent = vertex.parents[vertex.nextParent];
+    let lastPoint = vertex.branch === undefined ? nextPointOf(vertex) : pointOf(vertex);
+
+    // A merge can join a branch that already exists further down: follow that
+    // branch until its reserved connection point shows up instead of opening a
+    // new lane.
+    if (
+      parent !== undefined && parent !== LANE_NULL &&
+      vertex.parents.length > 1 && vertex.branch !== undefined &&
+      vertices[parent] && vertices[parent].branch !== undefined
+    ) {
+      const parentBranch = vertices[parent].branch;
+      const targetBranch = branches[parentBranch];
+      if (targetBranch === undefined) return;
+      let found = false;
+      for (row = startAt + 1; row < vertices.length; row++) {
+        const cur = vertices[row];
+        if (!cur) continue;
+        const connected = connectPoint(cur, parent, parentBranch);
+        const curPoint = connected || nextPointOf(cur);
+        found = connected !== undefined;
+        addEdge(targetBranch, lastPoint, curPoint, false);
+        reservePoint(cur, curPoint.lane, parent, parentBranch);
+        lastPoint = curPoint;
+        if (found) { vertex.nextParent += 1; break; }
+      }
+      if (!found) vertex.nextParent += 1;
+      return;
+    }
+
+    const br = { colour: availableColour(startAt), edges: [], end: row };
+    branches.push(br);
+
+    if (vertex.branch === undefined) {
+      vertex.branch = br.colour;
+      vertex.lane = lastPoint.lane;
+    }
+    reservePoint(vertex, lastPoint.lane, vertex.id, br.colour);
+
+    // Root commit: the lane ends here even if more history follows below.
+    if (parent === undefined) {
+      branchEnds[br.colour] = startAt;
+      return;
+    }
+
+    for (row = startAt + 1; row < vertices.length; row++) {
+      const cur = vertices[row];
+      if (!cur) continue;
+      const curPoint = (parent === cur.id && cur.branch !== undefined) ? pointOf(cur) : nextPointOf(cur);
+      addEdge(br, lastPoint, curPoint, parent === LANE_NULL);
+      reservePoint(cur, curPoint.lane, parent ?? LANE_NULL, br.colour);
+      lastPoint = curPoint;
+
+      if (parent === cur.id) {
+        vertex.nextParent += 1;
+        const parentAlreadyOnBranch = cur.branch !== undefined;
+        if (!parentAlreadyOnBranch) {
+          cur.branch = br.colour;
+          cur.lane = curPoint.lane;
+        }
+        // Walk on from the parent: `vertex` becomes the parent, and its own
+        // nextParent counter decides which of ITS parents to follow next.
+        vertex = cur;
+        parent = vertex.parents[vertex.nextParent];
+        if (parent === undefined || parentAlreadyOnBranch) break;
+      }
+    }
+    if (row >= vertices.length && parent === LANE_NULL) vertex.nextParent += 1;
+    br.end = row;
+    branchEnds[br.colour] = row;
+  }
+
+  let row = 0;
+  while (row < vertices.length) {
+    const v = vertices[row];
+    if (v && (v.branch === undefined || v.nextParent < v.parents.length)) {
+      determinePath(row);
+    } else {
+      row += 1;
+    }
+  }
+
+  const nodes = vertices.map((v) => ({
+    hash: v.commit.hash,
+    lane: v.lane,
+    row: v.id,
+    colour: v.branch ?? 0,
+  }));
+  const edges = branches.flatMap((b) => b.edges);
+  const laneCount = Math.max(
+    1,
+    ...nodes.map((n) => n.lane + 1),
+    ...edges.map((e) => Math.max(e.fromLane, e.toLane) + 1),
+  );
+  return { nodes, edges, laneCount };
 }
+
+/* Cached layout for the current COMMITS array; invalidated on reload. */
+let CACHE_LAYOUT = null;
+let CACHE_LAYOUT_SIG = "";
+function ensureLayout() {
+  const sig = COMMITS.length + ":" + (COMMITS[0] ? COMMITS[0].hash : "");
+  if (CACHE_LAYOUT && CACHE_LAYOUT_SIG === sig) return CACHE_LAYOUT;
+  CACHE_LAYOUT = layoutGraph(COMMITS);
+  CACHE_LAYOUT_SIG = sig;
+  return CACHE_LAYOUT;
+}
+
+function getLaneOf(hash) {
+  if (!CACHE_LAYOUT) return 0;
+  const n = CACHE_LAYOUT.nodes.find((x) => x.hash === hash);
+  return n ? n.lane : 0;
+}
+
 
 /* ===================== interactions ===================== */
 const tip = document.createElement("div");
@@ -3301,6 +3853,34 @@ async function prefsLoad() {
       // Cannot compute without BRANCHES; deferred to migrateLegacyFilter().
     }
 
+    // --- date range -----------------------------------------------------------
+    if (typeof p["gg2-datefrom"] === "string") {
+      DATE_FROM = p["gg2-datefrom"];
+      saveStored("gg2-datefrom", DATE_FROM);
+    }
+    if (typeof p["gg2-dateto"] === "string") {
+      DATE_TO = p["gg2-dateto"];
+      saveStored("gg2-dateto", DATE_TO);
+    }
+
+    // --- flat mode ------------------------------------------------------------
+    // Grouped is the default; flat is the opt-in view that carries the lane graph.
+    // While this feature was being built, flat was briefly the default, so a
+    // stored `true` may predate the switch. Both stores are checked because the
+    // local copy is what the toggle wrote, while the server copy may be older or
+    // absent. Runs once (guarded by FLAT_DEFAULT_MIGRATED) so a deliberate later
+    // choice is never overwritten.
+    if (FLAT_DEFAULT_MIGRATED !== true) {
+      FLAT_MODE = false;
+      saveStored("gg2-flat", false);
+      prefsSync({ "gg2-flat": false });
+      markFlatMigrationDone();
+    } else if (typeof p["gg2-flat"] === "boolean") {
+      FLAT_MODE = p["gg2-flat"];
+      saveStored("gg2-flat", FLAT_MODE);
+    }
+    syncFlatBtn();
+
     // --- other remembered UI state ------------------------------------------
     for (const key of ["gg2-wdshow", "gg2-wdfolded", "gg2-wdgroupfolded", "gg2-brfolded", "gg2-theme"]) {
       if (p[key] !== undefined) { saveStored(key, p[key]); }
@@ -3406,6 +3986,24 @@ $("fAll").addEventListener("change", () => {
 $("btnFilter").addEventListener("click", (ev) => {
   ev.stopPropagation();
   $("filterMenu").classList.toggle("show");
+});
+
+/* Flat / grouped view toggle. Flat mode drops the branch group headers so the
+ * lane graph runs continuously — a header row has no commit node, which would
+ * otherwise leave a visible gap in every lane crossing it. */
+function syncFlatBtn() {
+  $("btnFlat").classList.toggle("on", FLAT_MODE);
+  $("btnFlat").title = FLAT_MODE
+    ? "当前：平铺视图（含泳道图）· 点击切换到按分支分组"
+    : "当前：按分支分组（无泳道图）· 点击切换到平铺视图";
+}
+$("btnFlat").addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  FLAT_MODE = !FLAT_MODE;
+  saveStored("gg2-flat", FLAT_MODE);
+  prefsSync({ "gg2-flat": FLAT_MODE });
+  syncFlatBtn();
+  render();
 });
 document.addEventListener("click", (ev) => {
   if (!ev.target.closest(".filterWrap")) $("filterMenu").classList.remove("show");
@@ -3535,10 +4133,73 @@ $("searchBox").addEventListener("input", (ev) => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
     SEARCH = ev.target.value.trim();
-    const n = SEARCH ? COMMITS.filter(matches).length : 0;
-    $("searchCount").textContent = SEARCH ? `${n} 条匹配` : "";
+    updateSearchCount();
     render();
   }, 200);
+});
+
+/* Match count reflects the *filtered* result set, matching what the list shows. */
+function updateSearchCount() {
+  if (!filtersActive()) { $("searchCount").textContent = ""; return; }
+  const n = COMMITS.filter(passesFilters).length;
+  $("searchCount").textContent = `${n} 条匹配`;
+}
+
+/** Reset search + date range (the "no results" escape hatch). */
+function clearFilters() {
+  SEARCH = "";
+  DATE_FROM = "";
+  DATE_TO = "";
+  $("searchBox").value = "";
+  $("dateFrom").value = "";
+  $("dateTo").value = "";
+  saveStored("gg2-datefrom", "");
+  saveStored("gg2-dateto", "");
+  prefsSync({ "gg2-datefrom": "", "gg2-dateto": "" });
+  updateSearchCount();
+  render();
+}
+
+/* ---- date range popover ---- */
+function fillDateInputs() {
+  $("dateFrom").value = DATE_FROM || "";
+  $("dateTo").value = DATE_TO || "";
+}
+function applyDateRange() {
+  const from = $("dateFrom").value || "";
+  const to = $("dateTo").value || "";
+  // Swap silently when the user picked them backwards; a rejection dialog here
+  // would be more annoying than just honouring the obvious intent.
+  if (from && to && dayStart(from) > dayEnd(to)) {
+    DATE_FROM = to;
+    DATE_TO = from;
+  } else {
+    DATE_FROM = from;
+    DATE_TO = to;
+  }
+  fillDateInputs();
+  $("btnDate").classList.toggle("on", Boolean(DATE_FROM || DATE_TO));
+  saveStored("gg2-datefrom", DATE_FROM);
+  saveStored("gg2-dateto", DATE_TO);
+  prefsSync({ "gg2-datefrom": DATE_FROM, "gg2-dateto": DATE_TO });
+  $("dateMenu").classList.remove("show");
+  updateSearchCount();
+  render();
+}
+$("btnDate").addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  fillDateInputs();
+  $("dateMenu").classList.toggle("show");
+});
+$("dateMenu").addEventListener("click", (ev) => ev.stopPropagation());
+$("dateApply").addEventListener("click", applyDateRange);
+$("dateClear").addEventListener("click", () => {
+  $("dateFrom").value = "";
+  $("dateTo").value = "";
+  applyDateRange();
+});
+document.addEventListener("click", (ev) => {
+  if (!ev.target.closest(".dateWrap")) $("dateMenu").classList.remove("show");
 });
 
 /* ---- context menu ---- */
@@ -4054,6 +4715,11 @@ window.addEventListener("dblclick", (ev) => {
   navigator.clipboard?.writeText(hash).catch(() => {});
 });
 
+/* Reflect the restored date filter in the UI before the first paint, so a saved
+ * range is visible (button highlighted, inputs filled) rather than silent. */
+fillDateInputs();
+$("btnDate").classList.toggle("on", Boolean(DATE_FROM || DATE_TO));
+syncFlatBtn();
 followParentTheme();
 applyTheme();
 load();
