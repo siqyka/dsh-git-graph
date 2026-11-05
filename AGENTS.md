@@ -29,12 +29,18 @@ dsh-git-graph 是 DeepSeek Harness (DSH) Web GUI 的嵌入式 Git 仓库图谱�
 
 `GET /git-graph/api?op=<op>&repo=<path>[&...]`，op 列表：
 
+写操作（`gitop` / `autoupdate` / `addrepo` / `prefswrite`）必须用 **POST**，其余为 GET。
+服务端对写 op 校验 `req.method`，GET 直接 405（v0.21 起，见下方安全防护）。
+
 | op | 用途 | 关键参数 |
 | --- | --- | --- |
 | `repos` | 会话工作区向上定位 git 根 + 白名单兜底（白名单与「打开文件夹」添加的仓库中，失效/非 git 的路径都会被过滤剔除，返回列表按 normKey 大小写去重）；`add` 重复参数重新注册客户端持久化的「打开文件夹」仓库 | `ws`、`add`(可多个) |
-| `graph` | 提交历史（topo 序，含 refs 装饰） | — |
-| `branches` | 本地/远程/标签 refs | — |
-| `workstatus` | 未提交改动分组列表（porcelain -z + numstat -z） | — |
+| `graph` | 提交历史（topo 序，含 refs 装饰）；`head` 由 `.git/HEAD` 直读（`readHeadName`）不额外起进程；`total` 首屏问一次 `rev-list --all --count`，之后由客户端 `total=` 回传（翻页只 1 次 spawn），全量请求或首页即覆盖全部时直接取 `commits.length` | `limit`、`skip`、`total` |
+| `head` | 轻量变更探测（每 5s 轮询用）：**0 spawn**，`readRefsFromDisk` 直接读盘，返回所有本地/远程 ref tip 的稳定签名 `sig`（含 ref 名，可发现新提交/分支移动/删除/强推）；读盘失败才回退 `for-each-ref` | — |
+| `branches` | 本地/远程/标签 refs，**0 spawn**（`readRefsFromDisk`；`packed-refs` + 松散 `refs/**`，松散覆盖打包，符号引用两遍解析）；读盘失败回退 `for-each-ref` | — |
+| `count` | 提交总数（`rev-list --all --count`），供「已显示 50 / 241」标签；从 `graph` 拆出以便首屏不等它。旧宿主无此 op → 客户端 `COUNT_OP_OK` 回退 | — |
+| `prefs` / `prefswrite` | UI 偏好持久化（分支过滤/折叠/主题）。`prefs` 读全部；`prefswrite`（**POST**）用 `set=<JSON>` 合并写入，仅接受白名单 key，`null` 删除该 key。落盘 `<插件目录>/.state/prefs.json`（gitignore），跨端口/重启有效 | `set` |
+| `workstatus` | 未提交改动分组列表：分支名取自 `status --branch` 的 `## ` 头记录（不再单独 `rev-parse`）；无暂存/无未暂存改动时**跳过对应的 numstat 调用**（干净工作区 1 次进程而非 3 次） | — |
 | `workfile` | 单文件 diff / 未跟踪内容 | `file`、`staged`(`0`\|`1`\|`untracked`)、`old`(重命名旧路径) |
 | `gitop` | 写操作：`stage`/`stage-all`/`unstage`/`unstage-all`/`discard`/`discard-all`/`commit`/`ignore`/`tag`/`tag-delete`/`tag-rename`/`branch`/`fetch`/`pull`/`push`/`checkout`/`delete-branch` | `action`、`file`(可多个)、`message`、`all`、`name`、`newname`、`hash`、`branch` |
 | `filelog` | 单文件提交历史（--follow 跟踪重命名） | `file` |
@@ -45,18 +51,43 @@ dsh-git-graph 是 DeepSeek Harness (DSH) Web GUI 的嵌入式 Git 仓库图谱�
 | `autoupdate` | 一键自更新：`git clone --depth 1 --branch <tag>` 下载到临时目录 → 校验 `index.js`/`web/index.html` → 同级目录备份（`<插件目录>.bak-<ts>`，`pruneBackups` 保留最新 1 份）→ 清空并替换 → 需重启 dsh web 生效；失败自动回滚备份；git 工作区挂载时直接 409 `git-managed` 拒绝 | `tag` |
 | `listdir` | 「打开文件夹」目录浏览（只读）：列出子目录（不含文件，跳过 `.git`），每项 `git` 标记=存在 `.git` 条目；无 `path` 时返回盘符列表（win32）或 `/`；返回 `root`（`findGitRoot` 结果，供前端判断「打开此文件夹」可用性）；超 500 项截断 | `path` |
 | `addrepo` | 「打开文件夹」确认添加：对路径 `findGitRoot` 向上定位仓库根 → 加入可访问集合（`recentKeys`）→ 返回 `{repo}`；非 git 仓库报 `not-a-git-repo` | `path` |
-| `show` / `diff` / `filediff` | 提交详情 / 完整补丁 / 单文件 diff | `hash`、`file` |
+| `show` / `diff` / `filediff` | 提交详情 / 完整补丁 / 单文件 diff（`filediff` 也是单次 `show --no-color --format= <hash> -- <file>`，不要先查父提交） | `hash`、`file` |
 
 ## 关键约定
 
 - **安全**：git 一律 `execFile` 固定参数数组，绝不拼接 shell；`workfile`/`gitop` 的文件路径用 `path.resolve` + `startsWith` 防穿越；长输出截断（`MAX_DIFF_CHARS`）；`gitop` 是**写操作**，客户端必须在破坏性动作（discard / commit）前弹确认框，暂存类可逆操作可直接执行
+- **安全防护（v0.21，见 `docs/security-audit-2026-11-05.md`）**：以下几条是安全审计后**必须保持**的约束，改代码时不要绕过：
+  - **写操作必须 POST**：`WRITE_OPS = {gitop, autoupdate, addrepo, prefswrite}` 在**服务端**（`index.js`）与**客户端**（`web/index.html` 的 `api()`）各有一份，必须同步。服务端对写 op 校验 `req.method === 'POST'`，GET 直接 405。这是 CSRF 的主防线——`<img>`/`<a>` 发不出 POST。
+  - **Origin/Referer 同源校验**：任一存在且与 `Host` 不符就 403 `cross-origin-blocked`。没有这两个头的请求（curl、测试、插件自启动）放行读操作，写操作仍需 POST。
+  - **`remoteinfo` 只准 http(s)**：`isSafeWebUrl()` 用 `new URL()` 解析后比对协议，`javascript:`/`data:`/`vbscript:`/`file:` 一律返回 `web:null`。**这个值会进 `window.open()`**，绝不能直接回显 remote 原文。
+  - **拒绝响应不泄露路径**：`repo-not-allowed` 只返回 `count`，不再回显 `repos` 数组（曾把本机全部仓库绝对路径回给调用方）。
+  - **HTML 插值必须 `escHtml()`**：文件名/分支名/标签名都来自仓库，属不可信输入（Linux/macOS 上文件名可含 `<>`）。`confirmDialog` 的 `bodyHtml` 是唯一 `innerHTML` 注入点，**所有** repo 派生文本都要过 `escHtml`（`ignoreConfirm`/`discardConfirm`/分支名/标签名已全部覆盖）。
+  - **响应头**：JSON 与页面都带 `X-Content-Type-Options: nosniff` + `no-store`；页面另带 CSP（`default-src 'none'`，因内联脚本/样式需 `unsafe-inline`，无构建步骤无法收紧）。
+  - 未做：`iframe sandbox` —— 同源 iframe 加 `allow-scripts allow-same-origin` 等于没有隔离（iframe 可自行移除 sandbox），去掉 `allow-same-origin` 又会破坏 localStorage 与 API 鉴权，属负收益，故不加。
+- **性能铁律：进程创建才是瓶颈（v0.16，v0.18→v0.19 逐轮补漏）**：量性能必须用 node 的 `execFile`+`hrtime`（bash 的 `date +%s%N` 会被 bash 自身启动污染成 ~440ms）。两个不同量级的数字都要记住：独立 node 进程里单次 `git` 约 **217ms**；而在 **DSH 宿主进程里约 870ms**（同一台机器装了腾讯管家 + 亚信防毒 + Defender，进程创建被串行化，并行没有收益）。所以判断快慢要看「DSH 内实测」，不能只看 mock。优化只看「每个 op 起几个 git」：
+  - **每个请求的公共校验绝不能起进程（v0.18 最大的一处遗漏）**：路由入口的「是不是 git 仓库」校验原本用 `await isGitRepo()`（= 一次 `git rev-parse`），排在所有 op 之前，**每个请求都白付一次 spawn**。改用 `hasGitEntry()`（`statSync(.git)`）。`isGitRepo` 现在只剩 `addrepo`（用户手动开文件夹，一次性）在用
+  - **能读文件就不起进程**：分支名读 `.git/HEAD`（`readHeadName`）；**refs 全量读盘（v0.19，`readRefsFromDisk`）**——`branches` 和 5s 轮询的 `head` 都改成 0 spawn（871ms → 1~2ms）。实现要点：先读 `packed-refs` 再扫松散 `refs/**`（松散覆盖打包），**符号引用必须两遍解析**（先收集所有 ref，再解 `ref: ` 目标）——否则 `origin/HEAD -> origin/master` 会取到 packed 里的旧 sha。读不出来时回退 `for-each-ref`
+  - **能合并就合并**：`show` 用一条 `show --stat`（meta+stat）；`filediff` 用一条 `show <hash> -- <file>`（**不要先查 `%P` 父提交**）；`workstatus` 分支名取自 `status --branch` 的 `## ` 头
+  - **能跳过就跳过**：`workstatus` 干净时跳过 `numstat`（3 → 1）；`graph` 的 `total` 首屏用 `count=0` 让客户端**异步**补（新增 `count` op），翻页复用 `total=`
+  - **轮询必须轻**：5s 轮询用 `head`（v0.19 起 0 spawn）
+  - 改任何 op 前先估算 spawn 次数。**v0.19 后的下限：`branches`/`head` 为 0，`repos` 为 0，其余都是每次请求 1 次**
+- **新 op 必须带客户端降级**：`count` 是新增 op，旧宿主返回 `unknown-op`。`refreshTotal()` 用 `COUNT_OP_OK` 记住一次失败并回退到「graph 带 total」，否则 `TOTAL` 会永久停在页长、把后面的提交全部藏掉。同理 `hasMore()` 把 `TOTAL===0` 视为「未知」而不是「没有更多」，否则 count 在飞时按钮和滚动加载会一起消失
+- **`show` 解析注意**：meta 与 stat 用 `\x1e--STAT--\x1e` 标记行分隔，**不要**用 `\x1f\x1f` 之类的字段组合——root commit 的 `%P` 为空，会产生连续 `\x1f` 导致元信息被提前截断（曾因此把 subject/author 解析成空串）
 - **写操作刷新流**：`gitop` 成功后清空 `wdDiffCache` → `refreshWorkdir()`；`commit` 等改变历史/分支的操作用 `reloadGraphLight()`（不重新解析会话工作区）
 - **diff 高亮**：统一用 `highlightDiff(pre, text)` 渲染 diff（行级 `.df-head/.df-hunk/.df-add/.df-del`）；未跟踪内容/错误信息仍用 `pre.textContent`
-- **分页**：`graph` op 支持 `limit`/`skip` + `total`（rev-list --count）；客户端 `PAGE=200`，`LOADED`/`TOTAL` 跟踪进度，`render()` 末尾按 `TOTAL > LOADED` 渲染「加载更多」按钮，`loadMore()` 追加去重
-- **状态记忆**：`loadStored/saveStored` 封装 localStorage；键统一 `gg2-` 前缀（v0.8 起）：`gg2-theme`、`gg2-wdshow`（分组开关）、`gg2-wdfolded`（面板折叠）、`gg2-wdgroupfolded`（组折叠）、`gg2-brfolded`（分支组折叠）、`gg2-bfilter`（分支过滤勾选 refnames，null=全选）；分支过滤按 refname 记忆（sha 会变）。v0.11 新增：`gg2-repos`（「打开文件夹」添加的仓库路径数组，每次 `load()` 通过 `repos?add=` 重新注册到服务端）、`gg2-currepo`（上次选择/打开的仓库，加载时优先选它）
-- **打开文件夹**（v0.11）：客户端 `listdir`/`addrepo` 走「📂 打开」按钮或空态按钮（`#btnOpenDir`/`#btnOpenDirEmpty`）；选中文件夹 `addrepo` 成功 → 写入 `gg2-repos`/`gg2-currepo` → `REPO=新仓库` → `load()` 全量重载；空态时 `REPO` 为 null 且 `api()` 不带 repo 参数，服务端 `listdir`/`addrepo`/`repos` 在 repo 校验之前处理，无碍
+- **分页与缓存（v0.17）**：`graph` op 支持 `limit`/`skip` + `total`。客户端首屏 `PAGE_INITIAL=50`，下滑续拉 `PAGE_MORE=100`（`loadMore()` 追加去重，`LOADING_MORE` 防并发、`PAGINATION_EXHAUSTED` 防空页死循环，全量 `load`/`reloadGraphLight` 时重置）。**只有真实滚动才触发续拉**：监听在 `#graphWrap`（它才是 `overflow:auto` 的滚动容器，window 的 scroll 在 iframe 里收不到），`maybeAutoLoad()` 用 rAF 节流；列表短于视口时（分支组默认折叠时很常见）**刻意不自动填满**，否则会在用户没要求时把每一页都偷偷拉完——此时由「加载更多」按钮兜底。`total` 只在需要精确总数时才补跑 `rev-list --all --count`（全量请求用 `commits.length`；末页未满用 `skip + commits.length`），避免每次翻页多起一个进程
+- **响应缓存（v0.17）**：`DETAIL_CACHE`(hash→{info,diff}) / `FILEDIFF_CACHE`(hash\\0file) / `FILELOG_CACHE`(file)，`cacheGet` 做 LRU touch、`cacheSet` 超 `PAGE_LIMIT=400` 淘汰最旧。**只放内存 Map、绝不写 localStorage**：图谱跑在插件自己的 iframe 里（`client.js` 渲染 `/git-graph/index.html`），关标签/刷新/关插件/重启都会连整个 document 一起销毁，「关闭后清理」由结构本身保证；另外 `pagehide`/`beforeunload` 主动 `clearResponseCache()`，兼作 bfcache 复活时的兜底。失效时机：**切换仓库**（hash/路径跨仓库不通用）、**任意 `gitop` 写操作成功后**（`runGitOp` 里）；提交数据本身不可变，因此详情缓存不需要过期策略。**`showFileDiff`/`showFileHist` 必须先判断「是否已展开」再发请求**（原来是先 fetch 再判断要不要收起，导致点 ✕ 收起也白跑一次 git）
+- **状态记忆**：`loadStored/saveStored` 封装 localStorage；键统一 `gg2-` 前缀（v0.8 起）：`gg2-theme`、`gg2-wdshow`（分组开关）、`gg2-wdfolded`（面板折叠）、`gg2-wdgroupfolded`（组折叠）、`gg2-brfolded`（分支组折叠）、`gg2-bfilter-hidden`（v0.22 起：分支过滤的**隐藏** refname 黑名单，null/[] = 全可见）；分支过滤按 refname 记忆（sha 会变）。v0.11 新增：`gg2-repos`（「打开文件夹」添加的仓库路径数组，每次 `load()` 通过 `repos?add=` 重新注册到服务端）、`gg2-currepo:<工作区>`（上次选择/打开的仓库，**按工作区分键**，见下条；加载时优先选它）。v0.15 新增：`gg2-detailw`（详情面板宽度 px，null/非法值=回落 CSS 默认）
+- **偏好持久化到服务端（v0.22，修「分支过滤重进就没了」）**：`localStorage` 按 **origin** 隔离，而 DSH 的 web 端口每次启动可能变化（如 10426 → 5828），换端口后所有 `gg2-*` 记忆会**静默清空**——这就是"选了分支、重进又没了"的真正原因（不是保存逻辑坏了）。因此把 UI 偏好**同时写一份到服务端**：`op=prefs` 读、`op=prefswrite` 写（POST），落盘于 `<插件目录>/.state/prefs.json`（已 gitignore，不跟仓库走）。服务端有**白名单** `PREFS_ALLOWED_KEYS`（只允许 bfilter / wdshow / wdfolded / wdgroupfolded / brfolded / theme），其它 key 一律忽略；单文件上限 256KB。启动时 `prefsLoad()` 先把服务端值灌回内存再首次渲染，保证第一帧就是筛选后的状态。旧宿主（未重启、无 prefs op）用 `PREFS_OP_OK` 记住一次失败后降级为纯 localStorage，不刷错误请求。
+- **分支过滤存"黑名单"（v0.22）**：`HIDDEN_REFS` 存**被隐藏**的 refname（`null`/`[]` = 全可见），而不是"已勾选"。这样**新建分支默认可见**——旧方案存可见列表，新分支不在列表里就被判为隐藏，表现为"我的分支凭空消失"。`applyFilter()` 每次都从 DOM 重算黑名单并**顺带收敛**（不存在的 ref 自动剔除）。旧键 `gg2-bfilter`（可见列表）由 `migrateLegacyFilter()` 在首次拿到 `BRANCHES` 后一次性迁移成黑名单，然后删掉旧键。
+- **空筛选结果必须给出口（v0.22）**：`FILTER === "multi"` 且实际渲染行数为 0 时，列表显示提示 +「恢复全选」按钮。判断条件**不能用 `vis.size === 0`**：隐藏当前分支后，其它 tip 仍在可见集里，只是它们可达的提交被去重吞掉，最终一行都没有——用可见集大小判断会漏掉这种情况。`hiddenCount()`/`branchCount()` 提供两种文案区分"全被隐藏"与"部分隐藏但无提交可显示"。
+
+- **详情面板可调宽（v0.15）**：`#main` 内 `#graphWrap` 与 `#detail` 之间插入 `#detailGrip`（6px 分隔条，`display:none`，仅 `#main.detail-open` 时显示；≤760px 覆盖态同样隐藏）。`#detail.open` 宽度取 `var(--gg-detail-w, 430px)`（CSS 仍是默认值真源，用户拖动后才写内联变量到 `document.documentElement`）。拖动用 Pointer Events + `setPointerCapture`（覆盖鼠标/触屏/笔），拖动中给 `#detail` 加 `.no-anim` 关掉 160ms 宽度过渡、`body.gg-col-resize` 全局改光标；宽度夹在 `[260, min(1200, mainW-520)]`（预留图谱可用空间）。双击分隔条清空存储并恢复默认；方向键 ±12 / Shift ±40 无障碍微调；`resize` 时重新夹紧。**打开/关闭详情一律走 `setDetailOpen(bool)`**（同时切 `#detail.open` 与 `#main.detail-open`，后者驱动分隔条显隐），不要再单独 `classList.add/remove("open")`。程序化改宽（恢复/重置/resize）用 `withoutDetailAnim(fn)`：加 `.no-anim` 后必须在**下一帧**（rAF 两次）移除，同帧移除会让过渡从旧宽度重启动画
+- **打开文件夹**（v0.11）：客户端 `listdir`/`addrepo` 走「📂 打开」按钮或空态按钮（`#btnOpenDir`/`#btnOpenDirEmpty`）；选中文件夹 `addrepo` 成功 → 写入 `gg2-repos`（+ `saveCurRepo`）→ `REPO=新仓库` → `load()` 全量重载；空态时 `REPO` 为 null 且 `api()` 不带 repo 参数，服务端 `listdir`/`addrepo`/`repos` 在 repo 校验之前处理，无碍
 - **右键菜单**：无害操作（复制/查看详情/打标签/从提交新建分支/打开 GitHub 提交页/复制仓库路径/打开文件夹）；写操作走 `gitop`（tag / tag-delete / tag-rename / branch），`remoteinfo` 失败或无远程时 GitHub 项给出提示
 - **远程/分支操作**（v0.9）：顶栏 `⬇ 拉取`（`gitop fetch` = `git fetch --all --prune`）+ `⬆ 推送`（`gitop push` 当前分支，确认框「确认推送」）；分支组头右键菜单——本地分支：🔄 切换（`checkout`，有未提交改动时先确认）、⬆ 推送该分支、🗑️ 删除（`delete-branch`，`-d` 拒绝未合并分支，HEAD 分支禁止删除）；远程分支：⬇ 拉取、复制远程分支名。fetch/pull/push 用 120s 超时（`runGit` 第 4 参）；**远程组头始终生成**——chain 为空（无独有提交）时仍显示组头，标签区分「已同步」（tip 等于同名本地分支）与「已包含」（提交全部由其他组显示）
+- **跟随工作区切换（v0.20）**：图谱跑在 iframe 里，`?sid=` 在元素创建时就固定了，DSH 切换工作区时**复用同一个 iframe**（document 不重建），所以不加轮询就会一直显示旧仓库。`checkSessionWorkspace()` 每 3s 调 `resolveSessionWs()`（它优先匹配 `?sid`，无 sid 时回退「最近活跃会话」，因此独立打开页面也能跟随），`ws !== SESSION_WS` 时清缓存并 `load(ws)`。`load()` 用 `load.INFLIGHT` 防重入（切换与手动刷新可能并发，慢的那个会画错仓库）。
+- **「上次选的仓库」必须按工作区分键（v0.20 修的真正根因）**：之前用单一全局键 `gg2-currepo`，而它在 `load()` 里**优先于会话工作区**——切到工作区 B 后只要旧仓库 A 还在白名单里，`current` 就仍是 A，表现得像「图谱无视切换」。改用 `gg2-currepo:<工作区路径>`（`curRepoKey/loadCurRepo/saveCurRepo`），各工作区各记各的，切换必跟随、切回还记得。**新增读仓库偏好的地方一律走这三个函数，不要再直接读写 `gg2-currepo`**。
 - **自更新**（v0.10，v0.14 起按挂载形态降级）：`load()` 后静默调 `checkForUpdate(true)`；响应带 `managed:'git'`（插件目录在 git 工作区内，`gitManaged()` 服务端检测并缓存）时隐藏 `#btnUpdate`，手动检查提示 `git pull`；否则有新版时显示 `🔄 新版本 vX.Y` 按钮，点击 → 确认框「发现新版本」→ `autoupdate` → 提示重启生效；手动点击按钮在无更新时提示已最新；版本号取自 `package.json` 的 `version` 字段（远程地址在 `repository.url`）
 - **标签管理**：打标签对话框（`openTagDlg`）列出该提交已有标签，每行 ✎ 改名（`tag-rename`：先建新名于同 commit 再删旧名）+ ✕ 删除（`tag-delete`，确认框按钮「确认删除」）；`confirmDialog(title, body, danger, okLabel)` 支持自定义确认按钮文字
 - **批量操作**：行复选框选择（`WD_SELECT`，键 `groupKey\0path`）→ `updateBatchBar()` 渲染批量条（暂存/取消暂存/还原/忽略/提交选中）；`commit` 带 `file` 时只暂存并提交这些文件（selective commit）；`ignore` = 追加 `.gitignore`（去重）+ 已跟踪文件先 `git rm --cached`（保留磁盘文件）；写操作成功后统一 `WD_SELECT.clear()`；「放弃/还原」统一叫**还原**（`discardConfirm`，确认框标题「还原更改」）

@@ -3,3 +3,6 @@ node_modules/
 .DS_Store
 .playwright-mcp/
 _clean/
+# UI preferences persisted by the plugin (branch filter, fold state, theme).
+# Machine-specific, not source.
+.state/

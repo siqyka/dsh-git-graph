@@ -304,14 +304,31 @@
   #ctxMenu .cm-item .cm-key { margin-left: auto; color: var(--text3); font-size: 10.5px; }
   /* ===== main ===== */
   #main { flex: 1; display: flex; min-height: 0; position: relative; z-index: 1; }
+  /* Draggable splitter between the graph and the detail panel.
+     Only occupies space (and hit area) while the detail panel is open. */
+  #detailGrip {
+    display: none; flex: none; width: 6px; margin-right: -1px;
+    cursor: col-resize; position: relative; z-index: 6;
+    background: transparent; touch-action: none;
+  }
+  #main.detail-open #detailGrip { display: block; }
+  #detailGrip::before {
+    content: ''; position: absolute; left: 50%; top: 0; bottom: 0;
+    width: 2px; transform: translateX(-50%); border-radius: 2px;
+    background: var(--border); transition: background .12s ease, width .12s ease;
+  }
+  #detailGrip:hover::before, #detailGrip.dragging::before { background: var(--accent); width: 3px; }
+  body.gg-col-resize, body.gg-col-resize * { cursor: col-resize !important; user-select: none !important; }
   /* Narrow container (docked right column): details overlays the graph */
   @media (max-width: 760px) {
     #detail.open {
       position: absolute; right: 0; top: 0; bottom: 0;
-      width: 400px; max-width: 86%;
+      width: var(--gg-detail-w, 430px); max-width: 86%;
       z-index: 5;
       box-shadow: -10px 0 28px rgba(0,0,0,.4);
     }
+    /* overlay mode: the splitter would float over the graph, so hide it */
+    #main.detail-open #detailGrip { display: none; }
     #legend { display: none; }
     header .hint { display: none; }
     .gg-sub { display: none; }
@@ -413,7 +430,9 @@
     overflow: auto;
     transition: width .16s ease;
   }
-  #detail.open { width: 430px; }
+  #detail.open { width: var(--gg-detail-w, 430px); }
+  /* while dragging the splitter the width transition would lag behind the cursor */
+  #detail.no-anim { transition: none; }
   #detail .dhead {
     position: sticky; top: 0;
     background: var(--bg2);
@@ -856,6 +875,7 @@
     <div id="wdPanel"></div>
     <div id="commitList"></div>
   </div>
+  <div id="detailGrip" title="拖动调整详情宽度（双击恢复默认）" role="separator" aria-orientation="vertical" tabindex="-1"></div>
   <div id="detail">
     <div class="dhead">
       <span class="dtitle" id="dTitle">提交详情</span>
@@ -925,6 +945,47 @@ let COMMITS = [];          // [{hash, parents[], author, email, date, subject, r
 let BRANCHES = [];         // [{refname, kind, name, sha, head}]
 let WORKSTATUS = null;     // {branch, staged[], unstaged[], untracked[], counts}
 let wdDiffCache = new Map(); // workfile cache: "staged\0path" -> display text
+
+/* ---- in-memory response cache ----------------------------------------------
+ * Scope: this document only. The graph runs in the plugin's own iframe
+ * (client.js renders /git-graph/index.html in an <iframe>), so a reload of the
+ * DSH page, closing the tab, or closing the plugin destroys the whole frame and
+ * every Map here with it. Nothing is written to localStorage/sessionStorage, so
+ * no stale commit data can survive a restart — that is the "clear it when the
+ * plugin closes" requirement, satisfied by construction rather than by cleanup
+ * code that could miss a path.
+ *
+ * Commit data is immutable (a hash always identifies the same commit), so these
+ * entries never need invalidation on their own. The only thing that can change
+ * is the working tree, and that uses wdDiffCache, which is cleared explicitly on
+ * every gitop/refresh.
+ */
+const DETAIL_CACHE = new Map();   // hash -> {info, diff}
+const FILEDIFF_CACHE = new Map(); // hash\0file -> filediff response
+const FILELOG_CACHE = new Map();  // file -> filelog response
+const PAGE_LIMIT = 400;           // safety cap so a long session cannot grow unbounded
+function cacheGet(map, key) {
+  const v = map.get(key);
+  if (v === undefined) return undefined;
+  // LRU touch: re-insert so the newest entries survive the eviction below
+  map.delete(key); map.set(key, v);
+  return v;
+}
+function cacheSet(map, key, val) {
+  map.set(key, val);
+  if (map.size > PAGE_LIMIT) {
+    // drop the oldest entry (Map keeps insertion order)
+    const oldest = map.keys().next();
+    if (!oldest.done) map.delete(oldest.value);
+  }
+}
+/** Drop every cached response. Called when cached data could have gone stale:
+ *  repo switch, explicit refresh, and any successful gitop. */
+function clearResponseCache() {
+  DETAIL_CACHE.clear();
+  FILEDIFF_CACHE.clear();
+  FILELOG_CACHE.clear();
+}
 function loadStored(key, def) {
   try {
     const v = localStorage.getItem(key);
@@ -1142,6 +1203,12 @@ document.addEventListener("click", (ev) => {
 });
 
 /* ===================== api ===================== */
+/* Server ops that mutate state. These must be sent as POST: a cross-site page
+ * can point an <img>/<a> at a GET URL and have the browser fire it, but it
+ * cannot make the browser issue a POST without a CORS preflight (which the
+ * server never grants). The server enforces the same list. */
+const WRITE_OPS = new Set(["gitop", "autoupdate", "addrepo", "prefswrite"]);
+
 async function api(op, extra = {}) {
   const p = new URLSearchParams();
   p.set("op", op);
@@ -1150,7 +1217,14 @@ async function api(op, extra = {}) {
     if (Array.isArray(v)) for (const item of v) p.append(k, item);
     else if (v !== undefined && v !== null && v !== "") p.set(k, v);
   }
-  const res = await fetch("/git-graph/api?" + p.toString());
+  const init = WRITE_OPS.has(op)
+    ? {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      }
+    : undefined;
+  const res = await fetch("/git-graph/api?" + p.toString(), init);
   return res.json();
 }
 
@@ -1249,8 +1323,26 @@ function reachable(tip) {
 
 /* ===================== filter ===================== */
 const CHECKED_SET = new Set(); // branch shas kept visible when FILTER === "multi"
-let CHECKED_REFS = loadStored("gg2-bfilter", null); // persisted checked branch refnames (null = all)
-const PAGE = 200;         // commits per page (large-repo pagination)
+/* Branch filter, stored as the list of branches the user turned OFF.
+ *
+ * Storing the *hidden* set (rather than the visible one) is what makes a newly
+ * created branch visible by default — it is simply absent from the blacklist.
+ * With the old "store the checked ones" scheme every new branch was invisible
+ * until manually ticked, which read as "my branches disappeared".
+ *
+ * `null` = nothing hidden = show everything (the default).
+ * Persisted on the server (see prefsSync) so it survives DSH port changes,
+ * which wipe localStorage because it is origin-scoped. */
+let HIDDEN_REFS = loadStored("gg2-bfilter-hidden", null);
+/* Legacy key from the "store visible" era. Read once for migration, then the
+ * new key takes over; see migrateLegacyFilter(). */
+const LEGACY_VISIBLE_REFS = loadStored("gg2-bfilter", null);
+/* Pagination: the first screen only needs a short list, and every extra page is
+ * an extra `git log` process (~200ms+ on Windows), so the initial fetch is kept
+ * small and later pages are bigger — scrolling down is already an explicit
+ * "I want more" gesture, so it can afford a larger batch than the first paint. */
+const PAGE_INITIAL = 50;  // commits loaded on first paint
+const PAGE_MORE = 100;    // commits loaded per scroll/load-more step
 let LOADED = 0;           // commits loaded so far
 let TOTAL = 0;            // total commits in the repo
 let REPO_LIST = [];       // available repos for the switcher
@@ -1420,20 +1512,42 @@ function render() {
     if (commitRows.length === 1) row.classList.add("solo");
   }
 
-  // strict filter: every branch unchecked -> empty list with a hint
-  if (vis && vis.size === 0) {
+  // Empty result from the branch filter: say so explicitly and offer a way
+  // back. Checking `vis.size === 0` is not enough — hiding the checked-out
+  // branch usually leaves other tips in the set while every commit they reach
+  // is deduplicated away, so the list ends up empty with a non-empty vis.
+  if (FILTER === "multi" && commitRows.length === 0) {
     const hint = document.createElement("div");
-    hint.style.cssText = "color:var(--text3);text-align:center;padding:26px 0 18px;font-size:12.5px";
-    hint.textContent = "未选择任何分支 —— 在 ☑ 分支过滤 中勾选要显示的分支";
+    hint.className = "cl-filter-empty";
+    hint.style.cssText = "color:var(--text3);text-align:center;padding:26px 12px 18px;font-size:12.5px;line-height:1.9";
+    const msg = document.createElement("div");
+    msg.textContent = hiddenCount() >= branchCount()
+      ? "所有分支都被隐藏了 —— 勾选任意分支即可显示其提交"
+      : "当前筛选下没有可显示的提交 —— 你隐藏的分支可能承载了全部历史";
+    hint.appendChild(msg);
+    const btn = document.createElement("button");
+    btn.textContent = "恢复全选";
+    btn.style.cssText = "margin-top:10px;height:28px;padding:0 16px;border:1px solid var(--border);border-radius:7px;background:var(--bg3);color:var(--text);cursor:pointer;font-size:12px";
+    btn.addEventListener("click", () => {
+      HIDDEN_REFS = [];
+      for (const b of document.querySelectorAll(".fBranch")) b.checked = true;
+      applyFilter();
+    });
+    hint.appendChild(btn);
     list.appendChild(hint);
   }
 
-  // large-repo pagination: load-more button
-  if (TOTAL > LOADED) {
+  // large-repo pagination: the next page is normally fetched by scrolling to the
+  // bottom (see the #graphWrap scroll handler); the button stays as a fallback
+  // for short viewports where the list never grows tall enough to scroll.
+  if (hasMore()) {
     const more = document.createElement("div");
     more.className = "cl-more";
     const b = document.createElement("button");
-    b.textContent = `加载更多（已显示 ${LOADED} / ${TOTAL}）`;
+    // TOTAL is 0 while the background count is still in flight; don't print "x / 0"
+    b.textContent = TOTAL > 0
+      ? `加载更多（已显示 ${LOADED} / ${TOTAL}）`
+      : `加载更多（已显示 ${LOADED}）`;
     b.addEventListener("click", async () => {
       b.disabled = true;
       b.textContent = "加载中…";
@@ -1446,19 +1560,113 @@ function render() {
   renderLegend();
 }
 
-/** Fetch the next page of commits and re-render. */
-async function loadMore() {
+/* Is there plausibly another page? TOTAL === 0 means "not known yet" (the count
+ * is fetched in the background), which must NOT be treated as "nothing left" or
+ * the load-more button and scroll-loading would both disappear until it lands. */
+function hasMore() {
+  if (PAGINATION_EXHAUSTED) return false;
+  if (TOTAL > 0) return TOTAL > LOADED;
+  return true;
+}
+
+/* Auto-pagination: fetch the next page when the user scrolls near the bottom.
+ * Uses the #graphWrap scroll box (that is the overflow container, so window
+ * scroll events never fire here).
+ *
+ * Only an actual scroll gesture loads more. In particular, do NOT fill up a list
+ * that is too short to scroll: branch groups are collapsed by default, so the
+ * first screen is only a handful of headers — auto-filling it would silently pull
+ * every page before the user asked, which is what pagination is meant to avoid.
+ * When the list cannot scroll, the "加载更多" button below it is the affordance. */
+let AUTO_LOAD_QUEUED = false;
+function maybeAutoLoad() {
+  if (AUTO_LOAD_QUEUED) return;
+  AUTO_LOAD_QUEUED = true;
+  requestAnimationFrame(() => {
+    AUTO_LOAD_QUEUED = false;
+    if (!hasMore()) return;
+    const wrap = $("graphWrap");
+    const sentinel = document.querySelector("#commitList .cl-more");
+    if (!wrap || !sentinel) return;
+    if (wrap.scrollHeight <= wrap.clientHeight + 4) return; // nothing to scroll yet
+    const wr = wrap.getBoundingClientRect();
+    const sr = sentinel.getBoundingClientRect();
+    // trigger when the load-more area is within 300px of the visible bottom
+    if (sr.top - wr.bottom < 300) loadMore();
+  });
+}
+
+/** Fetch the commit count in the background and update the "load more" label.
+ *  Split out of the first graph page so the first paint does not wait for a
+ *  second git spawn (each spawn costs ~870ms inside the DSH host process here). */
+let TOTAL_PENDING = false;
+/* A server that predates the `count` op answers unknown-op. Remember it once so
+ * we fall back to the old behaviour (ask graph to include the total) instead of
+ * 400-ing on every refresh — and, more importantly, so `TOTAL` does not stay
+ * stuck at the page size and silently hide every later commit. */
+let COUNT_OP_OK = true;
+async function refreshTotal() {
+  if (TOTAL_PENDING) return;
+  TOTAL_PENDING = true;
   try {
-    const g = await api("graph", { limit: PAGE, skip: LOADED });
+    if (COUNT_OP_OK) {
+      const r = await api("count");
+      if (r.ok && r.total > 0) {
+        const before = TOTAL;
+        TOTAL = r.total;
+        // Only re-render when the label actually changes; a needless render()
+        // would rebuild the whole list and reset the scroll position.
+        if (TOTAL !== before) {
+          render();
+          renderStats();
+        }
+        return;
+      }
+      COUNT_OP_OK = false;   // old host: fall through to the legacy path
+    }
+    // legacy host: the total only comes from a graph page that computes it
+    const g = await api("graph", { limit: PAGE_INITIAL, skip: 0 });
+    if (g.ok && g.total > 0) {
+      const before = TOTAL;
+      TOTAL = g.total;
+      if (TOTAL !== before) { render(); renderStats(); }
+    }
+  } catch { /* ignore */ } finally {
+    TOTAL_PENDING = false;
+  }
+}
+
+/** Fetch the next page of commits and re-render.
+ *  Guarded so a scroll burst cannot fire several overlapping pages: while a
+ *  fetch is in flight further calls return immediately. */
+let LOADING_MORE = false;
+/* Set when a page comes back with nothing new: the server says there is more but
+ * the same commits are already loaded (e.g. a force-push landing mid-scroll).
+ * Without this the auto-loader would re-request the same page forever. */
+let PAGINATION_EXHAUSTED = false;
+async function loadMore() {
+  if (LOADING_MORE || !hasMore()) return;
+  LOADING_MORE = true;
+  try {
+    // Pass the total we already know so the server can skip `rev-list --count`
+    // on every later page (one git spawn instead of two).
+    const g = await api("graph", { limit: PAGE_MORE, skip: LOADED, total: TOTAL || 0 });
     if (!g.ok) return;
     const map = byHash();
     const fresh = (g.commits || []).filter((c) => !map.has(c.hash));
+    if (!fresh.length) {
+      // Nothing new for this offset; stop auto-loading instead of spinning.
+      PAGINATION_EXHAUSTED = true;
+      return;
+    }
     COMMITS.push(...fresh);
     LOADED = COMMITS.length;
     TOTAL = g.total || LOADED;
     BRANCH_COLOR_CACHE = null;
     render();
-  } catch { /* ignore */ }
+  } catch { /* ignore */ } finally {
+    LOADING_MORE = false;
+  }
 }
 
 function buildCommitRow(c, hidden, isKbd, vis, hlSet) {
@@ -1670,12 +1878,54 @@ function hideTip() { tip.style.display = "none"; }
  * mouse wheel (graphWrap is overflow:auto). SCALE/PAN stay fixed at defaults. */
 
 /* ===================== detail ===================== */
+/* Detail panel width is user-resizable (splitter scrub), persisted in localStorage.
+   DEFAULTS stay CSS-driven via --gg-detail-w so the stylesheet remains the source
+   of truth; the stored value only overrides it once the user drags. */
+const DETAIL_W_DEFAULT = 430, DETAIL_W_MIN = 260;
+let DETAIL_W = (() => {                       // null = use CSS default
+  const v = Number(loadStored("gg2-detailw", null));
+  return Number.isFinite(v) && v > 0 ? v : null;
+})();
+function detailWMax() {
+  const w = $("main").clientWidth || 0;
+  // keep the graph usable: leave room for the commit list + workdir header buttons
+  return Math.max(DETAIL_W_MIN, Math.min(1200, w - 520));
+}
+/** Suppress the width transition for one frame, so programmatic width changes
+ *  (restore / reset / window resize) don't animate. */
+function withoutDetailAnim(fn) {
+  const el = $("detail");
+  el.classList.add("no-anim");
+  fn();
+  // drop the flag on the next frame: within the same task the browser would
+  // still coalesce both class changes and animate nothing.
+  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.remove("no-anim")));
+}
+function applyDetailWidth(px) {
+  if (px === null) {
+    document.documentElement.style.removeProperty("--gg-detail-w");
+    DETAIL_W = null;
+    return;
+  }
+  const v = Math.max(DETAIL_W_MIN, Math.min(detailWMax(), Math.round(px)));
+  DETAIL_W = v;
+  document.documentElement.style.setProperty("--gg-detail-w", v + "px");
+}
+/* Open/close helper: keeps #main.detail-open in sync (drives the splitter). */
+function setDetailOpen(open) {
+  $("detail").classList.toggle("open", open);
+  $("main").classList.toggle("detail-open", open);
+}
 async function selectCommit(hash, scroll = false) {
   SELECTED = hash;
   render();
   if (scroll) scrollToNode(hash);
-  $("detail").classList.add("open");
+  setDetailOpen(true);
   const d = $("dContent");
+  // Re-opening a commit that was already viewed is instant: no git process at
+  // all. Commit data is immutable, so a hit never needs revalidation.
+  const hit = cacheGet(DETAIL_CACHE, hash);
+  if (hit) { renderDetail(hit.info, hit.diff); return; }
   d.innerHTML = "";
   const loading = document.createElement("div");
   loading.className = "empty";
@@ -1686,6 +1936,10 @@ async function selectCommit(hash, scroll = false) {
     if (!info.ok) { d.textContent = "加载失败: " + (info.error || "?"); return; }
     const firstParent = info.parents[0];
     const diff = firstParent ? await api("diff", { hash }) : null;
+    // don't cache failures; a transient git error should be retryable
+    if (info.ok) cacheSet(DETAIL_CACHE, hash, { info, diff });
+    // the user may have clicked another commit while this was in flight
+    if (SELECTED !== hash) return;
     renderDetail(info, diff);
   } catch (err) {
     d.textContent = "加载失败: " + err.message;
@@ -1788,21 +2042,90 @@ function renderDetail(info, diff) {
   d.appendChild(body);
 }
 $("dClose").addEventListener("click", () => {
-  $("detail").classList.remove("open");
+  setDetailOpen(false);
   SELECTED = null;
   render();
 });
 
+/* ---------- splitter: drag to resize the detail panel ---------- */
+/* Pointer Events cover mouse + touch + pen; the grip is only hit-testable while
+   the panel is open (CSS), so no extra state guard is needed before a drag. */
+(() => {
+  const grip = $("detailGrip");
+  let startX = 0, startW = 0, moved = false, dragging = false;
+  const currentW = () => $("detail").getBoundingClientRect().width || DETAIL_W_DEFAULT;
+  function onMove(ev) {
+    if (!dragging) return;
+    const dx = ev.clientX - startX;
+    if (Math.abs(dx) > 1) moved = true;
+    applyDetailWidth(startW - dx); // dragging left => wider panel
+  }
+  function endDrag() {
+    if (!dragging) return;
+    dragging = false;
+    grip.classList.remove("dragging");
+    document.body.classList.remove("gg-col-resize");
+    // drop the no-anim flag on the next frame: removing it in the same task as
+    // the last width change would let the transition animate from a stale width
+    requestAnimationFrame(() => $("detail").classList.remove("no-anim"));
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", endDrag);
+    window.removeEventListener("pointercancel", endDrag);
+    if (moved) saveStored("gg2-detailw", DETAIL_W);
+  }
+  grip.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== undefined && ev.button !== 0) return;
+    ev.preventDefault();
+    dragging = true;
+    moved = false;
+    startX = ev.clientX;
+    startW = currentW();
+    grip.classList.add("dragging");
+    document.body.classList.add("gg-col-resize");
+    $("detail").classList.add("no-anim");
+    try { grip.setPointerCapture(ev.pointerId); } catch { /* ignore */ }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", endDrag);
+    window.addEventListener("pointercancel", endDrag);
+  });
+  // double-click: back to the stylesheet default
+  grip.addEventListener("dblclick", () => {
+    withoutDetailAnim(() => applyDetailWidth(null));
+    try { localStorage.removeItem("gg2-detailw"); } catch { /* ignore */ }
+  });
+  // keyboard affordance for accessibility (grip is focusable)
+  grip.addEventListener("keydown", (ev) => {
+    const step = ev.shiftKey ? 40 : 12;
+    if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+    ev.preventDefault();
+    withoutDetailAnim(() => applyDetailWidth(currentW() + (ev.key === "ArrowLeft" ? step : -step)));
+    saveStored("gg2-detailw", DETAIL_W);
+  });
+  // keep the stored width legal when the window shrinks
+  window.addEventListener("resize", () => {
+    if (DETAIL_W !== null) withoutDetailAnim(() => applyDetailWidth(DETAIL_W));
+  });
+  if (DETAIL_W !== null) withoutDetailAnim(() => applyDetailWidth(DETAIL_W)); // restore on load
+})();
+
 /* Show a single file's diff inside the detail panel (async). */
 async function showFileDiff(hash, file, rowEl) {
+  const d = $("dContent");
+  // Toggling a block off must not cost a request: check first, fetch later.
+  const existing = d.querySelector(".sf-diff-block[data-file='" + CSS.escape(file) + "']");
+  if (existing) { existing.remove(); return; } // toggle off
   rowEl.classList.add("sf-loading");
   try {
-    const res = await api("filediff", { hash, file });
+    const key = hash + "\0" + file;
+    let res = cacheGet(FILEDIFF_CACHE, key);
+    if (!res) {
+      res = await api("filediff", { hash, file });
+      if (res.ok) cacheSet(FILEDIFF_CACHE, key, res);
+    }
     rowEl.classList.remove("sf-loading");
-    const d = $("dContent");
-    let block = d.querySelector(".sf-diff-block[data-file='" + CSS.escape(file) + "']");
-    if (block) { block.remove(); return; } // toggle off
-    block = document.createElement("div");
+    // the panel may have moved on to another commit while this was in flight
+    if (SELECTED !== hash) return;
+    const block = document.createElement("div");
     block.className = "sf-diff-block";
     block.dataset.file = file;
     const head = document.createElement("div");
@@ -1834,14 +2157,19 @@ async function showFileDiff(hash, file, rowEl) {
 
 /** File history: list every commit touching the file (--follow). */
 async function showFileHist(file, rowEl) {
+  const d = $("dContent");
+  // toggle-off before fetching, same as showFileDiff
+  const existing = d.querySelector(".sf-hist-block[data-file='" + CSS.escape(file) + "']");
+  if (existing) { existing.remove(); return; } // toggle off
   rowEl.classList.add("sf-loading");
   try {
-    const res = await api("filelog", { file });
+    let res = cacheGet(FILELOG_CACHE, file);
+    if (!res) {
+      res = await api("filelog", { file });
+      if (res.ok) cacheSet(FILELOG_CACHE, file, res);
+    }
     rowEl.classList.remove("sf-loading");
-    const d = $("dContent");
-    let block = d.querySelector(".sf-hist-block[data-file='" + CSS.escape(file) + "']");
-    if (block) { block.remove(); return; } // toggle off
-    block = document.createElement("div");
+    const block = document.createElement("div");
     block.className = "sf-diff-block sf-hist-block";
     block.dataset.file = file;
     const head = document.createElement("div");
@@ -2205,7 +2533,23 @@ function highlightDiff(pre, text) {
   pre.appendChild(frag);
 }
 
-/** Confirm dialog (destructive actions). Resolves true/false. */
+/** Escape text for safe interpolation into HTML.
+ *  File paths, tag names and branch names come from the repository, not from
+ *  this page, so they are untrusted: a repo may contain a file called
+ *  `x<img src=x onerror=...>.txt` (legal on Linux/macOS). Any string that ends
+ *  up inside an innerHTML template must go through this. */
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** Confirm dialog (destructive actions). Resolves true/false.
+ *  `bodyHtml` is raw HTML: callers must pass escHtml() for any repo-derived
+ *  text they interpolate. */
 function confirmDialog(title, bodyHtml, danger, okLabel) {
   return new Promise((resolve) => {
     const d = $("ggDlg");
@@ -2365,7 +2709,7 @@ async function ignoreConfirm(paths) {
   const ok = await confirmDialog(
     "忽略选中",
     "将把这些文件<b>加入 .gitignore</b>；已跟踪的文件会<b>取消跟踪（文件保留在磁盘上）</b>：" +
-      "<div class='dlg-list'>" + paths.join("\n") + "</div>",
+      "<div class='dlg-list'>" + paths.map(escHtml).join("\n") + "</div>",
     true
   );
   if (ok) { WD_SELECT.clear(); runGitOp("ignore", { file: paths }); }
@@ -2386,7 +2730,7 @@ async function discardConfirm(paths) {
   const ok = await confirmDialog(
     "还原更改",
     "以下文件将被<b>还原到最近一次提交（HEAD）</b>，当前所有修改（含已暂存）都会<b>永久丢失</b>且不可恢复：" +
-      "<div class='dlg-list'>" + paths.join("\n") + "</div>",
+      "<div class='dlg-list'>" + paths.map(escHtml).join("\n") + "</div>",
     true
   );
   if (ok) runGitOp("discard", { file: paths });
@@ -2403,6 +2747,7 @@ async function runGitOp(action, params, needGraph) {
     if (!res.ok) { alert("操作失败: " + (res.error || "?")); return false; }
     WD_SELECT.clear();
     wdDiffCache.clear();
+    clearResponseCache();   // a commit/tag/branch write can change what details show
     await refreshWorkdir();
     if (needGraph) await reloadGraphLight();
     return true;
@@ -2416,16 +2761,24 @@ async function runGitOp(action, params, needGraph) {
 async function reloadGraphLight() {
   try {
     const [graph, branches] = await Promise.all([
-      api("graph", { limit: PAGE, skip: 0 }),
+      api("graph", { limit: PAGE_INITIAL, skip: 0, count: 0 }),
       api("branches")
     ]);
-    if (graph.ok) { COMMITS = graph.commits; TOTAL = graph.total || COMMITS.length; }
+    if (graph.ok) {
+      COMMITS = graph.commits;
+      // count=0 means graph.total is 0 here; keep the total we already knew
+      // instead of collapsing it to the page length.
+      TOTAL = graph.total || Math.max(TOTAL, COMMITS.length);
+    }
     LOADED = COMMITS.length;
+    PAGINATION_EXHAUSTED = false;   // fresh page list: pagination may run again
     if (branches.ok) BRANCHES = branches.branches.map(normalizeBranch);
     BRANCH_COLOR_CACHE = null;
+    if (!graph.total) refreshTotal();
+    REFS_SIG = null;   // we just reloaded: re-baseline the change-detection probe
     fillFilterMenu();
     SELECTED = null;
-    $("detail").classList.remove("open");
+    setDetailOpen(false);
     render();
     renderStats();
   } catch { /* ignore */ }
@@ -2496,6 +2849,37 @@ function renderStatusLine() {
 /* ===================== load ===================== */
 const SID_PARAM = new URLSearchParams(location.search).get("sid") || ""; // hosting session id
 let SESSION_WS = ""; // resolved workspace path of the hosting session
+/* Follow the hosting session's working copy.
+ *
+ * The iframe's ?sid is fixed when the element is created, and DSH keeps the same
+ * iframe element while the user switches working copies — the document is not
+ * recreated, so without this poll the graph would keep showing the repo of
+ * whichever workspace happened to be active when the tab was first opened.
+ *
+ * resolveSessionWs() already prefers the entry whose sessionId matches ?sid and
+ * otherwise falls back to the most recently active session, so polling works
+ * both when a sid is present and when the panel is opened standalone. */
+let WS_CHECK_BUSY = false;
+async function checkSessionWorkspace() {
+  if (WS_CHECK_BUSY) return;
+  if (document.hidden) return;               // no point polling a hidden tab
+  WS_CHECK_BUSY = true;
+  try {
+    const ws = await resolveSessionWs();
+    if (ws && ws !== SESSION_WS) {
+      SESSION_WS = ws;
+      // A different working copy means a different repository. Cached responses
+      // are keyed by commit hash / file path, which are unique per repository, so
+      // they must go. The "last picked repo" memory is already keyed per
+      // workspace, so it needs no clearing — and reloading with the new ws makes
+      // the graph follow the switch.
+      clearResponseCache();
+      await load(ws);
+    }
+  } catch { /* ignore transient failures */ } finally {
+    WS_CHECK_BUSY = false;
+  }
+}
 
 /**
  * Resolve the hosting session's cwd via the DSH internal session.list Remote.
@@ -2543,7 +2927,7 @@ async function resolveSessionWs() {
 /** 当前对话不是 git 仓库：显示空态，不显示图谱。 */
 function showEmpty(ws) {
   $("loading").classList.add("hidden");
-  $("detail").classList.remove("open");
+  setDetailOpen(false);
   COMMITS = [];
   BRANCHES = [];
   $("wdPanel").innerHTML = "";
@@ -2567,11 +2951,40 @@ function hideEmpty() {
   $("emptyState").classList.add("hidden");
 }
 
-async function load() {
+/* "Last repo picked" memory is scoped to the session's working copy.
+ *
+ * It used to be a single global key, which meant: switch the working copy from A
+ * to B, and the graph would still open repo A (the remembered pick) as long as A
+ * was anywhere in the allow-list — the graph looked like it ignored the switch.
+ * Keying it by workspace keeps each working copy's own pick while guaranteeing
+ * that a switch is followed. Returns the raw key so callers stay simple. */
+function curRepoKey() {
+  return "gg2-currepo:" + (SESSION_WS || "");
+}
+function loadCurRepo() {
+  return loadStored(curRepoKey(), "");
+}
+function saveCurRepo(v) {
+  saveStored(curRepoKey(), v);
+}
+
+async function load(wsOverride) {
+  // A workspace switch and a user-triggered refresh can overlap; running two
+  // loads at once would let the slower one win and paint the wrong repo.
+  if (load.INFLIGHT) return;
+  load.INFLIGHT = true;
   $("loading").classList.remove("hidden");
   hideEmpty();
   try {
-    if (!SESSION_WS) SESSION_WS = await resolveSessionWs();
+    // Restore UI preferences from the server before the first render, so the
+    // branch filter is already applied when the graph paints (localStorage may
+    // have been wiped by a port change).
+    if (!PREFS_LOADED) await prefsLoad();
+    // wsOverride comes from checkSessionWorkspace(), which has already resolved
+    // the new cwd; preferring it avoids a redundant (and potentially stale)
+    // second resolution racing with the poller.
+    if (wsOverride !== undefined) SESSION_WS = wsOverride;
+    else if (!SESSION_WS) SESSION_WS = await resolveSessionWs();
     const ws = SESSION_WS;
     // 重新注册用户通过「打开文件夹」添加过的仓库（服务端内存态重启后重置）
     const saved = ADDED_REPOS.filter(Boolean);
@@ -2591,7 +3004,7 @@ async function load() {
     // 当前仓库：上次选择的 > 会话工作区根 > 用户添加的第一个 > 服务端默认
     const available = repos.repos;
     let current = repos.current;
-    const last = loadStored("gg2-currepo", "");
+    const last = loadCurRepo();
     if (last && available.includes(last)) current = last;
     else if (repos.wsIsGit && repos.wsRoot) current = repos.wsRoot;
     else if (saved.length) {
@@ -2599,6 +3012,9 @@ async function load() {
       if (f) current = f;
     }
     if (!current || !available.includes(current)) current = available[0];
+    // Switching repos invalidates every cached response: keys are commit hashes
+    // and file paths, which are unique per repository.
+    if (current !== REPO) clearResponseCache();
     REPO = current;
     $("repoLabel").textContent = REPO;
     $("repoLabel").title = REPO;
@@ -2619,7 +3035,7 @@ async function load() {
     }
     sw.style.display = REPO_LIST.length > 1 ? "" : "none";
     const [graph, branches] = await Promise.all([
-      api("graph", { limit: PAGE, skip: 0 }),
+      api("graph", { limit: PAGE_INITIAL, skip: 0, count: 0 }),
       api("branches")
     ]);
     if (!graph.ok) {
@@ -2631,10 +3047,13 @@ async function load() {
       return;
     }
     COMMITS = graph.commits;
-    TOTAL = graph.total || COMMITS.length;
+    TOTAL = graph.total || COMMITS.length;   // provisional; refreshTotal() fills in the real count
     LOADED = COMMITS.length;
+    PAGINATION_EXHAUSTED = false;   // fresh page list: pagination may run again
     BRANCHES = branches.ok ? branches.branches.map(normalizeBranch) : [];
     BRANCH_COLOR_CACHE = null;
+    migrateLegacyFilter();              // old visible-list scheme -> hidden-list
+    if (!graph.total) refreshTotal();   // first page rendered without waiting for the count
     // 首次加载（尚无任何折叠偏好存储时）默认折叠全部分支组：
     // 只显示分组头，点击组头才展开该组提交；仅执行一次，之后尊重用户手动状态。
     if (!BRANCH_FOLD_DEFAULTED && !localStorage.getItem("gg2-brfolded")) {
@@ -2647,7 +3066,8 @@ async function load() {
     fillFilterMenu();
     SELECTED = null;
     KEY_IDX = 0;
-    $("detail").classList.remove("open");
+    setDetailOpen(false);
+    REFS_SIG = null;   // full load: let the next poll re-baseline
     render();
     renderStats();
     refreshWorkdir();
@@ -2660,6 +3080,7 @@ async function load() {
     $("loading").textContent = "加载失败: " + err.message;
   } finally {
     $("loading").classList.add("hidden");
+    load.INFLIGHT = false;
   }
 }
 
@@ -2773,7 +3194,7 @@ async function openPickPath() {
       ADDED_REPOS.push(res.repo);
       saveStored("gg2-repos", ADDED_REPOS);
     }
-    saveStored("gg2-currepo", res.repo);
+    saveCurRepo(res.repo);
     $("pickdirDlg").classList.remove("show");
     if (REPO === res.repo) return; // 已在查看此仓库，仅关闭对话框
     wdDiffCache.clear();
@@ -2831,7 +3252,7 @@ async function openScannedRepo(repo) {
     ADDED_REPOS.push(res.repo);
     saveStored("gg2-repos", ADDED_REPOS);
   }
-  saveStored("gg2-currepo", res.repo);
+  saveCurRepo(res.repo);
   wdDiffCache.clear();
   REPO = res.repo;
   await load();
@@ -2841,6 +3262,86 @@ $("pdClose").addEventListener("click", () => $("pickdirDlg").classList.remove("s
 $("pdUp").addEventListener("click", () => browseDir(PICK_PARENT || ""));
 $("pdOpen").addEventListener("click", openPickPath);
 $("pickdirDlg").addEventListener("click", (ev) => { if (ev.target === $("pickdirDlg")) $("pdClose").click(); });
+
+/* ===================== server-backed prefs ===================== */
+/* localStorage is origin-scoped and the DSH web port changes between launches,
+ * so anything kept there silently resets on a restart. UI preferences are
+ * mirrored to the server (a small JSON next to the plugin) and re-read on load,
+ * which is what makes the branch filter survive a port change.
+ * localStorage stays the fast path; the server copy wins when they disagree. */
+let PREFS_LOADED = false;
+/* A host that predates the prefs ops answers 403/unknown-op. Remember that once
+ * and fall back to localStorage-only, so an un-restarted host does not emit a
+ * failed request on every filter change. */
+let PREFS_OP_OK = true;
+function prefsSync(patch) {
+  if (!PREFS_LOADED || !PREFS_OP_OK) return;   // do not clobber the server copy before we read it
+  try {
+    api("prefswrite", { set: JSON.stringify(patch) }).then((r) => {
+      if (r && r.ok === false) PREFS_OP_OK = false;
+    }).catch(() => { /* best effort */ });
+  } catch { /* ignore */ }
+}
+async function prefsLoad() {
+  try {
+    const r = await api("prefs");
+    if (!r.ok || !r.prefs) { PREFS_OP_OK = false; PREFS_LOADED = true; return false; }
+    PREFS_OP_OK = true;
+    const p = r.prefs;
+    let changed = false;
+
+    // --- branch filter -------------------------------------------------------
+    if (Array.isArray(p["gg2-bfilter"])) {
+      HIDDEN_REFS = p["gg2-bfilter"];
+      saveStored("gg2-bfilter-hidden", HIDDEN_REFS);
+      changed = true;
+    } else if (HIDDEN_REFS === null && LEGACY_VISIBLE_REFS !== null) {
+      // Migrate the old "store the visible ones" scheme once: everything that
+      // was not visibly checked becomes hidden.
+      // Cannot compute without BRANCHES; deferred to migrateLegacyFilter().
+    }
+
+    // --- other remembered UI state ------------------------------------------
+    for (const key of ["gg2-wdshow", "gg2-wdfolded", "gg2-wdgroupfolded", "gg2-brfolded", "gg2-theme"]) {
+      if (p[key] !== undefined) { saveStored(key, p[key]); }
+    }
+    if (p["gg2-wdshow"] !== undefined) WD_SHOW = p["gg2-wdshow"];
+    if (p["gg2-wdfolded"] !== undefined) WD_FOLDED = p["gg2-wdfolded"];
+    if (Array.isArray(p["gg2-wdgroupfolded"])) {
+      WD_GROUP_FOLDED.clear();
+      for (const k of p["gg2-wdgroupfolded"]) WD_GROUP_FOLDED.add(k);
+    }
+    if (Array.isArray(p["gg2-brfolded"])) {
+      BRANCH_FOLDED.clear();
+      for (const k of p["gg2-brfolded"]) BRANCH_FOLDED.add(k);
+    }
+    PREFS_LOADED = true;
+    return changed;
+  } catch {
+    PREFS_LOADED = true;   // never block startup on the pref store
+    return false;
+  }
+}
+/** One-time migration from the legacy visible-list scheme. Needs BRANCHES, so
+ *  it runs after the first branches fetch. */
+function migrateLegacyFilter() {
+  if (HIDDEN_REFS !== null || LEGACY_VISIBLE_REFS === null) return;
+  const visible = LEGACY_VISIBLE_REFS;
+  const refs = BRANCHES.filter((b) => b.kind === "local" || b.kind === "remote").map((b) => b.refname);
+  HIDDEN_REFS = refs.filter((r) => !visible.includes(r));
+  saveStored("gg2-bfilter-hidden", HIDDEN_REFS);
+  try { localStorage.removeItem("gg2-bfilter"); } catch { /* ignore */ }
+}
+
+/* Counts used by the empty-filter hint. */
+function branchCount() {
+  return BRANCHES.filter((b) => b.kind === "local" || b.kind === "remote").length;
+}
+function hiddenCount() {
+  if (!HIDDEN_REFS || !HIDDEN_REFS.length) return 0;
+  const refs = new Set(BRANCHES.map((b) => b.refname));
+  return HIDDEN_REFS.filter((r) => refs.has(r)).length;   // ignore refs that no longer exist
+}
 
 /* ---- branch checkbox filter ---- */
 function fillFilterMenu() {
@@ -2863,8 +3364,9 @@ function fillFilterMenu() {
       cb.className = "fBranch";
       cb.dataset.sha = b.sha;
       cb.dataset.ref = b.refname;
-      // restore persisted filter: null = all checked; else only stored refnames checked
-      cb.checked = CHECKED_REFS === null || CHECKED_REFS.includes(b.refname);
+      // Restore from the hidden-list: only explicitly turned-off branches are
+      // unchecked, so a branch created since the filter was saved shows up.
+      cb.checked = !(HIDDEN_REFS && HIDDEN_REFS.includes(b.refname));
       const dot = document.createElement("span");
       dot.className = "fm-dot";
       dot.style.background = branchColorOf(b.sha);
@@ -2880,25 +3382,20 @@ function fillFilterMenu() {
 }
 function applyFilter() {
   const boxes = [...document.querySelectorAll(".fBranch")];
-  const anyUnchecked = boxes.some((b) => !b.checked);
-  const all = $("fAll");
-  all.checked = !anyUnchecked;
-  if (!anyUnchecked) {
-    FILTER = "all";
-    CHECKED_REFS = null;
-  } else {
-    // union of checked branches
-    FILTER = "multi";
-    CHECKED_SET.clear();
-    const refs = [];
-    for (const b of boxes) {
-      if (b.checked) CHECKED_SET.add(b.dataset.sha);
-      else refs.push(b.dataset.ref); // remember what was turned OFF
-    }
-    const allRefs = boxes.map((b) => b.dataset.ref);
-    CHECKED_REFS = allRefs.filter((r) => !refs.includes(r));
+  const hidden = boxes.filter((b) => !b.checked).map((b) => b.dataset.ref);
+  const anyHidden = hidden.length > 0;
+  $("fAll").checked = !anyHidden;
+  // Always record what is hidden (empty array = nothing hidden). Keeping an
+  // explicit [] rather than collapsing to null preserves "user chose to hide
+  // everything" as a distinct state from "never configured".
+  HIDDEN_REFS = hidden;
+  FILTER = anyHidden ? "multi" : "all";
+  CHECKED_SET.clear();
+  if (anyHidden) {
+    for (const b of boxes) if (b.checked) CHECKED_SET.add(b.dataset.sha);
   }
-  saveStored("gg2-bfilter", CHECKED_REFS);
+  saveStored("gg2-bfilter-hidden", HIDDEN_REFS);
+  prefsSync({ "gg2-bfilter": HIDDEN_REFS });   // server copy survives port changes
   render();
 }
 $("fAll").addEventListener("change", () => {
@@ -2946,7 +3443,7 @@ $("btnPush").addEventListener("click", async () => {
   const branch = ws && ws.branch ? ws.branch : "";
   const ok = await confirmDialog(
     "推送到远程",
-    "将把当前分支 <b>" + (branch || "HEAD") + "</b> 推送到 <b>origin</b>（会影响云端仓库，请确认）：",
+    "将把当前分支 <b>" + escHtml(branch || "HEAD") + "</b> 推送到 <b>origin</b>（会影响云端仓库，请确认）：",
     false, "确认推送"
   );
   if (!ok) return;
@@ -2969,7 +3466,7 @@ $("repoSwitch").addEventListener("change", (ev) => {
   const v = ev.target.value;
   if (!v || v === REPO) return;
   REPO = v;
-  saveStored("gg2-currepo", v);
+  saveCurRepo(v);
   $("repoLabel").textContent = v;
   $("repoLabel").title = v;
   wdDiffCache.clear();
@@ -3011,7 +3508,7 @@ $("btnUpdate").addEventListener("click", async () => {
   if (!UPDATE_STATE || !UPDATE_STATE.hasUpdate) { checkForUpdate(false); return; }
   const ok = await confirmDialog(
     "发现新版本",
-    "当前版本 <b>" + (UPDATE_STATE.current || "?") + "</b>，最新版本 <b>" + UPDATE_STATE.latest +
+    "当前版本 <b>" + escHtml(UPDATE_STATE.current || "?") + "</b>，最新版本 <b>" + escHtml(UPDATE_STATE.latest) +
       "</b>。将自动从 GitHub 下载并替换插件文件，<b>完成后需要重启 DeepSeek Harness 才能生效</b>。继续？",
     false, "立即更新"
   );
@@ -3154,7 +3651,7 @@ async function checkoutBranch(name) {
   if (ws && (ws.counts.staged || ws.counts.unstaged || ws.counts.untracked)) {
     const ok = await confirmDialog(
       "切换分支",
-      "当前有<b>未提交的改动</b>，切换分支可能导致这些改动被带入或冲突。确定切换到 <b>" + name + "</b> 吗？",
+      "当前有<b>未提交的改动</b>，切换分支可能导致这些改动被带入或冲突。确定切换到 <b>" + escHtml(name) + "</b> 吗？",
       false, "确认切换"
     );
     if (!ok) return;
@@ -3168,7 +3665,7 @@ async function checkoutBranch(name) {
 async function pushBranch(name) {
   const ok = await confirmDialog(
     "推送分支",
-    "将把本地分支 <b>" + name + "</b> 推送到 <b>origin</b>（会影响云端仓库，请确认）：",
+    "将把本地分支 <b>" + escHtml(name) + "</b> 推送到 <b>origin</b>（会影响云端仓库，请确认）：",
     false, "确认推送"
   );
   if (!ok) return;
@@ -3181,7 +3678,7 @@ async function deleteBranch(name, isHead) {
   if (isHead) { alert("不能删除当前所在的 HEAD 分支"); return; }
   const ok = await confirmDialog(
     "删除分支",
-    "确定删除本地分支 <b>" + name + "</b>？（已合并的分支可删除；未合并的会失败）",
+    "确定删除本地分支 <b>" + escHtml(name) + "</b>？（已合并的分支可删除；未合并的会失败）",
     true, "确认删除"
   );
   if (!ok) return;
@@ -3241,7 +3738,7 @@ function openTagDlg(hash) {
           input.focus();
         });
         mkBtn("✕", "删除", () => {
-          const safe = String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          const safe = escHtml(t);
           confirmDialog("删除标签", "确定删除标签 <b>" + safe + "</b>？（仅删除本地标签，不会推送远程）", true, "确认删除").then((ok) => {
             if (!ok) return;
             api("gitop", { action: "tag-delete", name: t }).then((res) => {
@@ -3373,6 +3870,7 @@ const SHORTCUTS = [
   ["Ctrl+/", "打开 / 关闭本快捷键面板"],
   ["Ctrl+F", "聚焦搜索框"],
   ["Ctrl+B", "折叠 / 展开分支分组"],
+  ["拖动详情分隔条", "调整提交详情面板宽度（双击恢复默认）"],
   ["双击提交", "复制提交哈希"],
 ];
 function fillShortcuts() {
@@ -3401,8 +3899,39 @@ function toggleShortcutDlg(force) {
 $("shortcutDlgClose").addEventListener("click", () => toggleShortcutDlg(false));
 $("shortcutDlg").addEventListener("click", (ev) => { if (ev.target === $("shortcutDlg")) toggleShortcutDlg(false); });
 
+/* ---- scroll-driven pagination ------------------------------------------------
+ * #graphWrap is the scroll container (it has overflow:auto), so the listener goes
+ * there — a window scroll listener would never fire inside the plugin iframe.
+ * maybeAutoLoad() is throttled through requestAnimationFrame so a fast scroll
+ * cannot queue multiple pages. */
+$("graphWrap").addEventListener("scroll", maybeAutoLoad, { passive: true });
+
+/* ---- release the response cache when the plugin closes ---------------------
+ * The cache lives in plain Maps owned by this document, so tearing the frame
+ * down (tab close, page reload, plugin unmount) already frees it. `pagehide`
+ * is fired for both unload and bfcache transitions; clearing here also matters
+ * for the bfcache case, where the Maps would otherwise be resurrected with the
+ * page and could hold data from a since-changed repository. */
+window.addEventListener("pagehide", clearResponseCache);
+window.addEventListener("beforeunload", clearResponseCache);
+
 /* ---- auto refresh: poll workstatus + head while the page is visible ---- */
 let AUTO_REFRESHING = false;
+/* Last ref-tip signature seen by the auto-refresh tick. null = not sampled yet.
+ * Reset to null after a full reload so the next tick just re-baselines. */
+let REFS_SIG = null;
+/* Does this server understand the `head` op? Detected once, so a not-yet-restarted
+ * host falls back to the old graph probe instead of 400-ing on every tick. */
+let HEAD_OP_OK = true;
+/* Pre-`head` change probe (kept for hosts that have not been restarted yet). */
+async function pollGraphFallback() {
+  const lg = await api("graph", { limit: 1, skip: 0 });
+  if (lg.ok && lg.commits && lg.commits.length) {
+    const newest = lg.commits[0].hash;
+    const old = COMMITS.length ? COMMITS[0].hash : null;
+    if (newest !== old || (lg.total || 0) !== TOTAL) await reloadGraphLight();
+  }
+}
 async function autoRefreshTick() {
   if (document.hidden) return;            // only refresh when the tab is visible
   if (AUTO_REFRESHING) return;
@@ -3421,19 +3950,37 @@ async function autoRefreshTick() {
         renderStats();
       }
     }
-    // New commits / branch moves: compare the newest hash with what we have.
-    const g = await api("graph", { limit: 1, skip: 0 });
-    if (g.ok && g.commits && g.commits.length) {
-      const newest = g.commits[0].hash;
-      const old = COMMITS.length ? COMMITS[0].hash : null;
-      if (newest !== old || (g.total || 0) !== TOTAL) {
-        await reloadGraphLight();
+    // New commits / branch moves: compare a lightweight ref-tip signature.
+    // The old code called graph {limit:1, skip:0}, which still ran three git
+    // processes (symbolic-ref + rev-list --count + log) — ~670ms per tick.
+    // The `head` op answers the same question with a single for-each-ref.
+    // A stale server (plugin not restarted yet) answers unknown-op; remember
+    // that once and fall back, rather than 400-ing on every tick.
+    if (HEAD_OP_OK) {
+      const g = await api("head");
+      if (g.ok) {
+        const sig = g.sig || "";
+        if (REFS_SIG === null) {
+          REFS_SIG = sig;                     // first tick: just remember baseline
+        } else if (sig !== REFS_SIG) {
+          REFS_SIG = sig;
+          await reloadGraphLight();
+        }
+      } else if (g.error === "unknown-op") {
+        HEAD_OP_OK = false;                   // old host: stop asking, use the fallback
+        await pollGraphFallback();
       }
+    } else {
+      await pollGraphFallback();
     }
   } catch { /* ignore transient failures */ }
   finally { AUTO_REFRESHING = false; }
 }
 setInterval(autoRefreshTick, 5000);
+/* Separate cadence: following the session's working copy is a different concern
+ * from refreshing the current repo, and it must not be blocked by the
+ * auto-refresh guard (a reload in flight would otherwise starve it). */
+setInterval(checkSessionWorkspace, 3000);
 
 /* ---- keyboard navigation ---- */
 function kbdVisibleList() {

@@ -16,6 +16,49 @@ const webRoot = join(here, 'web')
 const MAX_GIT_BUFFER = 32 * 1024 * 1024
 const MAX_DIFF_CHARS = 240000
 
+/* ---- persisted UI preferences ------------------------------------------------
+ * localStorage is scoped to the page's origin, and the DSH web port changes
+ * between launches (e.g. 10426 -> 5828), which silently wiped every saved
+ * preference — most visibly the branch filter, which then looked like it had
+ * "reset itself". Storing the small, low-risk UI state on disk instead makes it
+ * survive port changes and host restarts.
+ *
+ * Location: alongside the plugin (<plugin>/.state/prefs.json). That directory is
+ * gitignored, so a dev checkout stays clean, and the file is per-install so two
+ * DSH profiles do not fight over one file.
+ * Scope: only UI preferences (branch filter, group visibility, fold state).
+ * Never repository content, never credentials. */
+const STATE_DIR = join(here, '.state')
+const PREFS_FILE = join(STATE_DIR, 'prefs.json')
+const PREFS_MAX_BYTES = 256 * 1024
+const PREFS_ALLOWED_KEYS = new Set([
+  'gg2-bfilter', 'gg2-wdshow', 'gg2-wdfolded', 'gg2-wdgroupfolded', 'gg2-brfolded', 'gg2-theme',
+])
+
+function readPrefs() {
+  try {
+    const st = statSync(PREFS_FILE)
+    if (st.size > PREFS_MAX_BYTES) return {}
+    const raw = readFileSync(PREFS_FILE, 'utf8')
+    const obj = JSON.parse(raw)
+    return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {}
+  } catch {
+    return {}
+  }
+}
+
+function writePrefs(patch) {
+  const current = readPrefs()
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (!PREFS_ALLOWED_KEYS.has(k)) continue          // allow-list: ignore anything else
+    if (v === null || v === undefined) delete current[k]
+    else current[k] = v
+  }
+  mkdirSync(STATE_DIR, { recursive: true })
+  writeFileSync(PREFS_FILE, JSON.stringify(current, null, 2), 'utf8')
+  return current
+}
+
 export const name = 'git-graph'
 export const inject = ['webServer']
 
@@ -34,6 +77,15 @@ function runGit(repo, args, maxBuffer = MAX_GIT_BUFFER, timeoutMs = 0) {
   })
 }
 
+/* Fast local check for a git working tree: does `.git` exist (dir for a normal
+ * clone, file for a linked worktree/submodule)? Equivalent to what
+ * `git rev-parse --is-inside-work-tree` proves for the cases the repo list
+ * cares about, but costs one statSync instead of a ~200ms process launch —
+ * and this runs for every configured/known repo on each load. */
+function hasGitEntry(repo) {
+  try { return !!statSync(join(repo, '.git')) } catch { return false }
+}
+
 async function isGitRepo(repo) {
   try {
     const out = await runGit(repo, ['rev-parse', '--is-inside-work-tree'])
@@ -43,12 +95,150 @@ async function isGitRepo(repo) {
   }
 }
 
+/* Whether a string is a plain http(s) URL safe to hand to window.open().
+ * Anything with another scheme (javascript:, data:, vbscript:, file:) — or a
+ * string that is not a URL at all — is rejected. Scheme comparison is done on
+ * the parsed URL, so "JAVASCRIPT:" and leading-whitespace variants are caught
+ * the same way the browser would interpret them. */
+function isSafeWebUrl(value) {
+  try {
+    const u = new URL(String(value))
+    return (u.protocol === 'http:' || u.protocol === 'https:') && !!u.hostname
+  } catch {
+    return false
+  }
+}
+
+/* Resolve the .git directory for a work tree (handles linked worktrees and
+ * submodules, where .git is a file containing "gitdir: <path>"). */
+function gitDirOf(repo) {
+  let gitDir = join(repo, '.git')
+  const st = statSync(gitDir)
+  if (st.isFile()) {
+    const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(gitDir, 'utf8'))
+    if (!m) return null
+    const p = m[1].trim()
+    gitDir = p.startsWith('/') || /^[A-Za-z]:/.test(p) ? p : resolve(repo, p)
+  }
+  return gitDir
+}
+
+/* Read every local/remote/tag ref straight off disk — zero process spawns.
+ * Equivalent to the `for-each-ref` this used to shell out to, which cost a full
+ * git launch (~870ms inside the DSH host process on this machine) on every load.
+ *
+ * Merges the two places refs live:
+ *   * <gitdir>/packed-refs  (packed, sorted; lines "<sha> <refname>", plus
+ *     "^<sha>" peeled lines for annotated tags which are ignored here)
+ *   * <gitdir>/refs/**.      (loose, overrides packed — a newer loose value wins)
+ * Symbolic refs (e.g. refs/remotes/origin/HEAD -> refs/remotes/origin/master)
+ * are dereferenced, matching what for-each-ref reports.
+ * Returns null when the layout cannot be read, so callers can fall back to git. */
+function readRefsFromDisk(repo, headName) {
+  try {
+    const gitDir = gitDirOf(repo)
+    if (!gitDir) return null
+    const refs = new Map() // refname -> sha
+    // 1) packed-refs
+    try {
+      const packed = readFileSync(join(gitDir, 'packed-refs'), 'utf8')
+      for (const line of packed.split('\n')) {
+        if (!line || line[0] === '#' || line[0] === '^') continue
+        const sp = line.indexOf(' ')
+        if (sp <= 0) continue
+        const sha = line.slice(0, sp).trim()
+        const name = line.slice(sp + 1).trim()
+        if (sha && name) refs.set(name, sha)
+      }
+    } catch { /* no packed-refs: all refs are loose */ }
+    // 2) loose refs override packed values.
+    // Symbolic refs are collected into `pending` and resolved in a SECOND pass,
+    // because the target may itself be a loose ref that has not been read yet
+    // (e.g. refs/remotes/origin/HEAD -> refs/remotes/origin/master, where the
+    // packed value of origin/master is stale and the loose one wins). Resolving
+    // them inline would silently report the stale packed sha.
+    const pending = [] // [refname, targetRef]
+    const walk = (dir, prefix) => {
+      let entries
+      try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+      for (const e of entries) {
+        const full = join(dir, e.name)
+        const name = prefix + '/' + e.name
+        if (e.isDirectory()) { walk(full, name); continue }
+        let content
+        try { content = readFileSync(full, 'utf8').trim() } catch { continue }
+        if (content.startsWith('ref:')) {
+          pending.push([name, content.slice(4).trim()])
+          continue
+        }
+        if (/^[0-9a-f]{40,64}$/i.test(content)) refs.set(name, content)
+      }
+    }
+    for (const base of ['refs/heads', 'refs/remotes', 'refs/tags']) {
+      walk(join(gitDir, base), base)
+    }
+    // second pass: resolve symbolic refs (bounded, so a cycle cannot hang us)
+    for (const [name, target] of pending) {
+      let cur = target
+      for (let hop = 0; hop < 10; hop++) {
+        const direct = refs.get(cur)
+        if (direct) { refs.set(name, direct); break }
+        const next = pending.find((p) => p[0] === cur)
+        if (!next) break
+        cur = next[1]
+      }
+    }
+    const branches = []
+    for (const [refname, sha] of refs) {
+      branches.push({
+        refname,
+        kind: refname.startsWith('refs/tags/') ? 'tag' : refname.startsWith('refs/remotes/') ? 'remote' : 'local',
+        name: refname.replace(/^refs\/(heads|remotes|tags)\//, ''),
+        sha,
+        // the checked-out branch, same meaning as for-each-ref's %(HEAD)
+        head: refname === 'refs/heads/' + headName,
+      })
+    }
+    if (!branches.length) return null
+    return branches
+  } catch {
+    return null
+  }
+}
+
+/* Read the current branch name straight from .git/HEAD (no process spawn).
+ * Equivalent to `git symbolic-ref -q --short HEAD`: a detached HEAD yields
+ * "HEAD", and any failure falls back to "HEAD" as the old implementation did.
+ * Handles linked worktrees / submodules, where .git is a file containing
+ * "gitdir: <path>". */
+function readHeadName(repo) {
+  try {
+    let gitDir = join(repo, '.git')
+    let st = statSync(gitDir)
+    if (st.isFile()) {
+      const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(gitDir, 'utf8'))
+      if (!m) return 'HEAD'
+      const p = m[1].trim()
+      gitDir = p.startsWith('/') || /^[A-Za-z]:/.test(p) ? p : resolve(repo, p)
+    }
+    const head = readFileSync(join(gitDir, 'HEAD'), 'utf8').trim()
+    if (head.startsWith('ref:')) {
+      const ref = head.slice(4).trim()          // refs/heads/master
+      const short = ref.replace(/^refs\/heads\//, '')
+      return short || 'HEAD'
+    }
+    return 'HEAD'                                // detached
+  } catch {
+    return 'HEAD'
+  }
+}
+
 /* ===================== self-update ===================== */
 // Checks the GitHub repo for newer tags and can replace this plugin's files
 // from a codeload zip. No API key needed: version lookup uses `git ls-remote
 // --tags`, download uses https://codeload.github.com (zip, extracted by
 // bsdtar which ships with Windows 10+ / macOS / most Linux distros).
-const UPDATE_REPO = '1841220388zzzcccxxx-star/dsh-git-graph'
+const UPDATE_REPO = 'siqyka/dsh-git-graph'
 const UPDATE_GH = `https://github.com/${UPDATE_REPO}`
 
 function localVersion() {
@@ -371,11 +561,19 @@ export function apply(ctx, config = {}) {
     kind: 'prefix',
     path: '/git-graph',
     handler: async (req, res) => {
+      /* Baseline hardening headers on every response (JSON and HTML).
+       * nosniff stops a mislabeled response being sniffed as script; the page
+       * renders inside the plugin iframe, so no-store also keeps a cached
+       * snapshot of repo data from lingering in the browser cache. */
+      const BASE_HEADERS = {
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+      }
       const sendJson = (obj, status = 200) => {
         const body = JSON.stringify(obj)
         res.writeHead(status, {
+          ...BASE_HEADERS,
           'content-type': 'application/json; charset=utf-8',
-          'cache-control': 'no-store',
         })
         res.end(body)
       }
@@ -385,8 +583,21 @@ export function apply(ctx, config = {}) {
 
         if (pathname === '/git-graph/' || pathname === '/git-graph/index.html') {
           res.writeHead(200, {
+            ...BASE_HEADERS,
             'content-type': 'text/html; charset=utf-8',
-            'cache-control': 'no-store',
+            // The page is same-origin with the host GUI and only talks to this
+            // API; scope CSP to that. 'unsafe-inline' is required because the
+            // whole app is one inline <script> (no build step), and inline
+            // styles set element positions for the animated background.
+            'content-security-policy': [
+              "default-src 'none'",
+              "script-src 'unsafe-inline'",
+              "style-src 'unsafe-inline'",
+              'img-src data: blob:',
+              "connect-src 'self'",
+              "font-src 'self'",
+              "frame-ancestors 'self'",
+            ].join('; '),
           })
           res.end(readFileSync(join(webRoot, 'index.html')))
           return
@@ -397,7 +608,72 @@ export function apply(ctx, config = {}) {
           return
         }
 
+        /* ---- CSRF guard ---------------------------------------------------
+         * Without this, any web page could destroy work by pointing an <img> at
+         * `/git-graph/api?op=gitop&action=discard&...`: the browser attaches the
+         * request, and GET-only handlers ran it. Three independent checks:
+         *   1. writes must be POST (an <img>/<a> can never send POST)
+         *   2. Origin, when present, must match this host
+         *   3. Referer, when present, must match this host
+         * Requests without Origin/Referer are allowed for reads so that
+         * non-browser callers (curl, tests, the plugin's own startup) keep
+         * working; writes additionally require POST, which browsers cannot
+         * forge cross-site without a CORS preflight. */
+        const WRITE_OPS = new Set(['gitop', 'autoupdate', 'addrepo', 'prefswrite'])
+        const reqOp = url.searchParams.get('op') || 'graph'
+        const isWrite = WRITE_OPS.has(reqOp)
+        const selfHost = String(req.headers.host || '')
+        const sameHost = (value) => {
+          if (!value) return null                    // absent: caller decides
+          try {
+            const u = new URL(value, 'http://' + selfHost)
+            return u.host === selfHost
+          } catch { return false }
+        }
+        const originOk = sameHost(req.headers.origin)
+        const refererOk = sameHost(req.headers.referer)
+        if (originOk === false || refererOk === false) {
+          sendJson({ ok: false, error: 'cross-origin-blocked' }, 403)
+          return
+        }
+        if (isWrite && req.method !== 'POST') {
+          sendJson({ ok: false, error: 'method-not-allowed', hint: 'write operations require POST' }, 405)
+          return
+        }
+
         const op = url.searchParams.get('op') || 'graph'
+
+        if (op === 'prefs' || op === 'prefswrite') {
+          // UI preference store (see readPrefs/writePrefs). Repo-independent.
+          if (op === 'prefs') {
+            sendJson({ ok: true, prefs: readPrefs() })
+            return
+          }
+          // prefswrite: `set` is a JSON object of allow-listed keys to persist.
+          const raw = url.searchParams.get('set') || ''
+          if (!raw) {
+            sendJson({ ok: false, error: 'missing-set' }, 400)
+            return
+          }
+          let patch
+          try {
+            patch = JSON.parse(raw)
+          } catch {
+            sendJson({ ok: false, error: 'bad-json' }, 400)
+            return
+          }
+          if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+            sendJson({ ok: false, error: 'bad-shape' }, 400)
+            return
+          }
+          try {
+            const prefs = writePrefs(patch)
+            sendJson({ ok: true, prefs })
+          } catch (err) {
+            sendJson({ ok: false, error: String((err && err.message) || err) }, 500)
+          }
+          return
+        }
         if (op === 'repos') {
           // The current session's workspace (ws) is preferred when a git work
           // tree is found at or above it; configured repos follow as fallbacks.
@@ -410,18 +686,18 @@ export function apply(ctx, config = {}) {
           }
           // Drop configured paths that are not working git trees, so a stale
           // example config never poisons the repo list (not-a-git-repo).
+          // This uses the statSync check: a process launch per configured repo
+          // made the endpoint cost ~200ms each for no extra certainty.
           const configuredOk = []
           for (const r of allowed) {
-            if (await isGitRepo(r)) configuredOk.push(r)
+            if (hasGitEntry(r)) configuredOk.push(r)
           }
           // Same for user-added repos: a folder removed from disk must not stay
           // in the switcher forever (it would become the remembered current one).
           // Light existence check (.git entry) + case-folded dedup (recentKeys).
           const recentOk = []
           for (const r of recentRepos) {
-            let hasGit = false
-            try { hasGit = !!statSync(join(r, '.git')) } catch { /* vanished */ }
-            if (hasGit && !recentOk.some((x) => normKey(x) === normKey(r))) recentOk.push(r)
+            if (hasGitEntry(r) && !recentOk.some((x) => normKey(x) === normKey(r))) recentOk.push(r)
           }
           const ws = normalize(url.searchParams.get('ws') || '')
           let wsRoot = null
@@ -619,40 +895,123 @@ export function apply(ctx, config = {}) {
         let repo = url.searchParams.get('repo') || allowed[0]
         const repoNorm = normalize(repo || '')
         if (!repoNorm || !repoAllowed(repoNorm)) {
-          sendJson({ ok: false, error: 'repo-not-allowed', repos: allowed.concat([...recentRepos]) }, 403)
+          // Do not echo the allow-list: it would hand any unauthenticated caller
+          // a map of absolute paths on this machine. The count is enough for the
+          // UI to tell "no repos" apart from "wrong repo".
+          sendJson({ ok: false, error: 'repo-not-allowed', count: allowed.length + recentRepos.size }, 403)
           return
         }
         repo = repoNorm
 
         // Sanity: reject paths that are not existing git work trees.
-        if (!(await isGitRepo(repo))) {
+        // This runs on EVERY api call, so it must not launch a process: a
+        // `git rev-parse` here cost ~217ms per request on a machine where
+        // process creation is slow — it doubled the cost of every endpoint
+        // (show went from one spawn to two, filediff from two to three).
+        // A `.git` entry check answers the same question for the cases that
+        // matter here, because the path already passed the allow-list check.
+        if (!hasGitEntry(repo)) {
           sendJson({ ok: false, error: 'not-a-git-repo', repo }, 400)
           return
         }
 
         switch (op) {
           case 'graph': {
-            const headOut = await runGit(repo, ['symbolic-ref', '-q', '--short', 'HEAD']).catch(() => '')
-            const headName = headOut.trim() || 'HEAD'
-            // Pagination: limit/skip for large repos; total from rev-list.
+            // Spawn count matters a lot here: on Windows each `git` launch costs
+            // ~200ms (AV real-time scanning serializes process creation), so the
+            // old head + rev-list --count + log triple cost ~670ms. Both extra
+            // commands are now folded into the log call:
+            //   * head   -> `log -1` on HEAD via %D is unreliable; instead we read
+            //               .git/HEAD from disk (sync, ~0ms) and resolve the ref
+            //   * total  -> log is unbounded when no limit is given; with a limit
+            //               we still need the count, so it is skipped when the
+            //               caller asks for everything (limit === 0).
             const limit = Math.max(0, Math.min(parseInt(url.searchParams.get('limit') || '0', 10) || 0, 2000))
             const skip = Math.max(0, parseInt(url.searchParams.get('skip') || '0', 10) || 0)
-            const total = parseInt((await runGit(repo, ['rev-list', '--all', '--count']).catch(() => '0')).trim(), 10) || 0
+            // total the client already knows from an earlier page (0 = unknown)
+            const knownTotal = Math.max(0, parseInt(url.searchParams.get('total') || '0', 10) || 0)
             const args = ['log', '--all', '--topo-order', '--date=iso-strict',
               '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%d']
             if (skip > 0) args.push('--skip=' + skip)
             if (limit > 0) args.push('-n', String(limit))
-            const log = await runGit(repo, args)
+            // A limited page needs the true total for the "load more" button;
+            // the unlimited call already returns every commit (total = length).
+            const [headName, log] = await Promise.all([
+              readHeadName(repo),
+              runGit(repo, args),
+            ])
+            const commits = parseLog(log)
+            // The true total is only needed to label "已显示 50 / 241", so it
+            // must not delay the first paint. The client can opt out with
+            // `count=0` and fetch it separately via op=count; everything else
+            // (paging, which already knows the total) is unaffected.
+            const wantCount = url.searchParams.get('count') !== '0'
+            let total
+            if (skip === 0 && (limit === 0 || commits.length < limit)) {
+              // full history, or it fit inside the first page
+              total = commits.length
+            } else if (knownTotal > 0) {
+              total = knownTotal
+            } else if (!wantCount) {
+              total = 0                                   // caller will ask via op=count
+            } else {
+              // first page of a longer history: ask git once
+              total = parseInt((await runGit(repo, ['rev-list', '--all', '--count']).catch(() => '0')).trim(), 10) || 0
+            }
             sendJson({
               ok: true,
               repo,
               head: headName,
               total,
-              commits: parseLog(log),
+              commits,
+            })
+            break
+          }
+          case 'count': {
+            // Total number of commits reachable from any ref, used to label
+            // "已显示 50 / 241". Split out of `graph` so the first page does not
+            // wait for it (they are two independent spawns otherwise).
+            const total = parseInt((await runGit(repo, ['rev-list', '--all', '--count']).catch(() => '0')).trim(), 10) || 0
+            sendJson({ ok: true, repo, total })
+            break
+          }
+          case 'head': {
+            // Change-detection probe for the 5s auto-refresh tick.
+            // Now zero spawns: the ref tips are read off disk (same source as
+            // `branches`). This runs every 5 seconds for as long as the plugin
+            // is open, so a git launch here used to cost ~870ms of a background
+            // process 12 times a minute.
+            const disk = readRefsFromDisk(repo, readHeadName(repo))
+            if (disk) {
+              const lines = disk
+                .filter((b) => b.kind === 'local' || b.kind === 'remote')
+                .map((b) => `${b.sha} ${b.refname}`)
+                .sort()
+              sendJson({ ok: true, repo, refs: lines.length, sig: lines.join('|') })
+              break
+            }
+            // fallback: exotic ref layout
+            const out = await runGit(repo, [
+              'for-each-ref', '--format=%(objectname) %(refname)',
+              'refs/heads', 'refs/remotes',
+            ]).catch(() => '')
+            const lines = out.split('\n').map((s) => s.trim()).filter(Boolean)
+            // deterministic order so the signature is stable between polls
+            lines.sort()
+            sendJson({
+              ok: true,
+              repo,
+              refs: lines.length,
+              sig: lines.join('|'),
             })
             break
           }
           case 'branches': {
+            // Read refs straight off disk (0 spawns). Falls back to
+            // `for-each-ref` only if the on-disk layout is unreadable, so an
+            // exotic setup still works at the old cost.
+            const fromDisk = readRefsFromDisk(repo, readHeadName(repo))
+            if (fromDisk) { sendJson({ ok: true, branches: fromDisk }); break }
             // for-each-ref supports %09 (tab) but not %x1f (that is a log/pretty-format feature).
             const out = await runGit(repo, [
               'for-each-ref',
@@ -677,16 +1036,38 @@ export function apply(ctx, config = {}) {
           case 'workstatus': {
             // VSCode-style working-tree overview: structured file lists grouped by
             // staged / unstaged / untracked, with per-file +/- counts (numstat).
-            const branch = (await runGit(repo, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '')).trim() || 'HEAD'
-            const statusOut = await runGit(repo, ['status', '--porcelain=v1', '-z']).catch(() => '')
-            const stagedNum = await runGit(repo, ['diff', '--cached', '--numstat', '-z']).catch(() => '')
-            const unstagedNum = await runGit(repo, ['diff', '--numstat', '-z']).catch(() => '')
+            // The branch name comes from `status --branch` (first "## <branch>"
+            // record) instead of a separate rev-parse call — one less spawn, and
+            // this endpoint is polled every 5s by the client.
+            const statusOut = await runGit(repo, ['status', '--branch', '--porcelain=v1', '-z']).catch(() => '')
+            // The first -z record of `status --branch` is the "## <branch>"
+            // header, NUL-terminated like any other record. Parse it out first
+            // and hand the remainder to parsePorcelainZ (which would otherwise
+            // see "#master..." as a file path and emit a bogus staged entry).
+            // "## master...origin/master [ahead 1]" / "## HEAD (no branch)"
+            const nulAt = statusOut.indexOf('\0')
+            const hasBranchHead = statusOut.startsWith('## ') && nulAt > 0
+            const branchLine = hasBranchHead ? statusOut.slice(3, nulAt) : ''
+            const filesOut = hasBranchHead ? statusOut.slice(nulAt + 1) : statusOut
+            const branch = branchLine
+              ? (branchLine.startsWith('No commits yet on ') ? branchLine.slice('No commits yet on '.length)
+                : branchLine.startsWith('Initial commit on ') ? branchLine.slice('Initial commit on '.length)
+                : branchLine.split('...')[0].split(' ')[0]) || 'HEAD'
+              : (await runGit(repo, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '')).trim() || 'HEAD'
+            const statusRecords = parsePorcelainZ(filesOut)
+            // Only ask for numstat when there is something to count. On a clean
+            // tree (the common polling case) both diffs would spawn a git process
+            // each and return nothing, so they are skipped: clean = 1 spawn.
+            const needStaged = statusRecords.some((r) => r.x !== ' ' && r.x !== '?' && r.x !== '!')
+            const needUnstaged = statusRecords.some((r) => r.y !== ' ' && r.y !== '?' && r.y !== '!')
+            const stagedNum = needStaged ? await runGit(repo, ['diff', '--cached', '--numstat', '-z']).catch(() => '') : ''
+            const unstagedNum = needUnstaged ? await runGit(repo, ['diff', '--numstat', '-z']).catch(() => '') : ''
             const stagedCounts = parseNumstatZ(stagedNum)
             const unstagedCounts = parseNumstatZ(unstagedNum)
             const staged = []
             const unstaged = []
             const untracked = []
-            for (const r of parsePorcelainZ(statusOut)) {
+            for (const r of statusRecords) {
               const num = (m) => {
                 const n = m.get(r.path)
                 return n ? { added: n.added === '-' ? null : parseInt(n.added, 10) || 0, deleted: n.deleted === '-' ? null : parseInt(n.deleted, 10) || 0, binary: n.added === '-' } : { added: 0, deleted: 0, binary: false }
@@ -819,6 +1200,14 @@ export function apply(ctx, config = {}) {
             }
             // Drop the .git suffix and any trailing slash.
             web = web.replace(/\.git\/?$/, '').replace(/\/+$/, '')
+            // The client feeds this straight into window.open(). A remote such as
+            // `javascript:alert(1)//` would otherwise become executable script in
+            // the plugin's origin, so only real web URLs may pass. Anything else
+            // yields web:null and the UI simply hides the "open GitHub" action.
+            if (!isSafeWebUrl(web)) {
+              sendJson({ ok: true, web: null, remote: raw, rejected: 'unsafe-url' })
+              break
+            }
             sendJson({ ok: true, web, remote: raw })
             break
           }
@@ -1046,24 +1435,30 @@ export function apply(ctx, config = {}) {
               sendJson({ ok: false, error: 'missing-hash' }, 400)
               return
             }
-            const meta = await runGit(repo, ['log', '-1', `--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%b`, hash]).catch(() => '')
-            const parts = meta.split('\x1f')
+            // One spawn instead of two: `show --stat` emits the commit header and
+            // the file stat together. The header uses \x1f field separators and is
+            // terminated by a marker line that cannot appear in commit metadata,
+            // so the stat section can be split off reliably even for root commits
+            // (whose %P is empty and therefore contains an empty \x1f field).
+            const MARK = '\x1e--STAT--\x1e'
+            const out = await runGit(repo, [
+              'show', '--stat', '--no-color',
+              `--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%b%n${MARK}`,
+              hash,
+            ]).catch(() => '')
+            const sep = out.indexOf(MARK)
+            const metaOut = sep === -1 ? out : out.slice(0, sep)
+            const statOut = sep === -1 ? '' : out.slice(sep + MARK.length)
+            const parts = metaOut.split('\x1f')
             const sha = parts[0] || hash
             const parents = (parts[1] || '').trim()
             const author = parts[2] || ''
             const email = parts[3] || ''
             const date = parts[4] || ''
             const subject = parts[5] || ''
-            const body = parts.slice(6).join('\x1f').trim()
-            // stat: diff against the first parent; root commits use the empty tree.
-            let stat = ''
-            const firstParent = parents ? parents.split(' ')[0] : ''
-            if (firstParent) {
-              stat = await runGit(repo, ['diff', '--stat', firstParent, sha]).catch(() => '')
-            } else {
-              stat = await runGit(repo, ['show', '--stat', '--format=', sha]).catch(() => '')
-            }
-            sendJson({ ok: true, hash: sha, parents: parents ? parents.split(' ') : [], author, email, date, subject, body, stat: stat.trim() })
+            const body = parts.slice(6).join('\x1f').replace(/\s+$/, '')
+            const stat = statOut.replace(/^\s*\n/, '').replace(/\s+$/, '')
+            sendJson({ ok: true, hash: sha, parents: parents ? parents.split(' ') : [], author, email, date, subject, body, stat })
             break
           }
           case 'diff': {
@@ -1085,14 +1480,12 @@ export function apply(ctx, config = {}) {
               sendJson({ ok: false, error: 'missing-hash-or-file' }, 400)
               return
             }
-            // Diff of a single file inside one commit (against its first parent).
-            let out = ''
-            const parents = (await runGit(repo, ['log', '-1', '--format=%P', hash]).catch(() => '')).trim()
-            if (parents) {
-              out = await runGit(repo, ['diff', '--no-color', parents.split(' ')[0], hash, '--', file]).catch(() => '')
-            } else {
-              out = await runGit(repo, ['show', '--no-color', '--format=', hash, '--', file]).catch(() => '')
-            }
+            // Diff of a single file inside one commit.
+            // One spawn instead of two: `git show <hash> -- <path>` already
+            // diffs against the first parent, and for a root commit it diffs
+            // against the empty tree — exactly the behaviour the old
+            // log-to-get-parents + diff/show pair reproduced by hand.
+            const out = await runGit(repo, ['show', '--no-color', '--format=', hash, '--', file]).catch(() => '')
             const truncated = out.length > MAX_DIFF_CHARS
             sendJson({ ok: true, file, diff: truncated ? out.slice(0, MAX_DIFF_CHARS) : out, truncated })
             break
