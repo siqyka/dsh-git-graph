@@ -110,7 +110,13 @@ dsh-git-graph 是 DeepSeek Harness (DSH) Web GUI 的嵌入式 Git 仓库图谱�
   - **refs 标签在消息之前**：行内 refs（`.cl-refs`）渲染在 subject **左侧**、紧随泳道 gutter，而不是跟在消息尾部。分支/tag 名是最短、最便于扫读的部分，固定在左侧后可整列竖着扫；尾随在 subject 后面会漂到"这句话恰好结束的地方"，离视线起点很远。**配套约束**：`.cl-msg` 必须 `flex: 1 1 auto; min-width: 0`，否则标签前置后长 subject 不再占满剩余宽度、省略号失效。
   - **泳道图只在平铺模式显示**：`buildCommitRow()` 里只有 `FLAT_MODE` 为真才创建 `.cl-graph` 占位，`renderLaneGraph()` 也在开头直接 `if (!FLAT_MODE) return`（顺带跳过 O(n) 的 `ensureLayout`）。**分组模式左侧什么都没有**——组头那一行没有提交节点，画出来必然断线，用户明确要求此时不显示，而不是显示一条会断的线。改这块时别把两个渲染路径合并。
 - **页面**：内联脚本 `"use strict"`；API 失败统一 `{ok:false, error}`；主题变量用 `--bg/--text/...` + `html.gg-light`；v0.8 起 **8 种风格方案**（🌸 樱花/🌊 海洋/🌲 森林/🌙 夜空/🍬 糖果/💼 商务/✨ 星河/🤖 科技，移植自拾光记）各带 `#ggDeco` 背景装饰（花瓣/波浪气泡鱼/树草萤火虫/星星月亮流星/彩虹彩带/几何玻璃/地球/电路齿轮），`renderBgDecor()` 按当前风格动态生成，仅彩色风格启用；**`#graphWrap` 背景必须保持透明**（否则实色背景会盖住装饰层），header/statsBar/statusLine 用 `position:relative; z-index:1` 保证内容可读、弹层（菜单 30/40、对话框 60）在其上
-- **快捷键**：`Ctrl+/` 开关快捷键面板（`#shortcutDlg`）、`Ctrl+F` 聚焦搜索、`Ctrl+B` 折叠/展开全部分支组、`↑/↓`+`j/k` 导航、`Enter` 详情、`Esc` 关闭；提交对话框内 `✨ AI 生成提交信息` 调 `suggestmsg` 填充候选（可编辑）
+- **快捷键与「唯一选中态」（v0.24）**：`Ctrl+/` 开关快捷键面板（`#shortcutDlg`）、`Ctrl+F` 聚焦搜索、`Ctrl+B` 折叠/展开全部分支组、`↑/↓`+`j/k` 切换提交并同步打开详情、`Esc` 关闭；提交对话框内 `✨ AI 生成提交信息` 调 `suggestmsg` 填充候选（可编辑）
+  - **只有一个游标：`SELECTED`（hash）**。鼠标点击与 `↑/↓`/`j`/`k` 都只写它，**不要再引入 `KEY_IDX` 之类的第二个下标游标**。历史上是两套状态（`SELECTED` 给鼠标、`KEY_IDX` 给键盘），后果是**点选第 6 行再按 ↓ 会从第 1 行开始**——键盘游标从没被告知鼠标去了哪里。更隐蔽的是 `KEY_IDX` 是 `COMMITS` 的下标，却由**过滤后的可见行列表**算出，于是「搜索/日期过滤」或「分支折叠」激活时，虚线框会落在根本不是你刚按的那条提交上。
+  - **为什么用 hash 而不是下标**：过滤、折叠、分页都会让下标指向另一条提交，任何下标游标每次 render 后都得重新同步（这正是旧代码反复出错的地方）；hash 是唯一稳定标识。
+  - **按下时从 `SELECTED` 出发**：`list.indexOf(SELECTED)` 得当前位；返回 `-1`（选中的提交当前没被渲染：被过滤、在折叠组里、或还没翻到）时 ↓ 从头开始、↑ 从末尾开始，保证按键**总有一次可见的移动**，而不是静默无反应。
+  - **`kbdVisibleList()` 直接读 DOM**（`#commitList .cl-row` 的 `data-hash`），不要用 `buildRows()` 重算：`buildRows()` 只知道分支折叠，`render()` 另外还会因 `passesFilters()`（搜索/日期）和 `HIGHLIGHT`（图例高亮）丢行——两边不一致会让方向键「按了没反应」或「一次跳两条」。**DOM 里有什么，用户就能看到并逐条走过什么。**
+  - **选中样式 = 背景高亮 + 虚线框，同一个 `.cl-row.sel`**：`.kbd` 类已删除。样式分成两个类时，「详情开着的那行」和「键盘接着来的那行」可以是两行，虚线框的存在正是为了回答"我现在在哪、下一步去哪"。
+  - **`buildCommitRow(c)` / `buildHeadRow(r)` 只收实际用到的参数**：`hidden`/`vis`/`hlSet` 曾作为未使用参数一路传下去（`buildHeadRow` 的 `vis`/`hlSet` 从未被读），已删除；行是否需要渲染由调用方（`render()`）判定，构造器不再重复判断。
 - **分支过滤语义**：不勾选的分支其提交与分组头完全隐藏；`visibleSet()` 返回空集时显示空列表（禁止回落全显）；`buildRows(vis)` 对本地与远程分支都生成可折叠分组——**过滤激活时，tip 不在可见集的分支直接跳过且不标记 seen**（否则其祖先提交会被吞掉，导致共享该祖先的可见分支组变空），leftovers 也按可见集过滤（已完全合并进已显示提交的分支不重复生成）
 - **未提交改动**：常驻图谱顶部 `#wdPanel`（`refreshWorkdir` 拉取 workstatus 并渲染面板 + 状态栏）；分组（staged 按 X 码、unstaged 按 Y 码、`??` 为未跟踪、冲突码 `U`）；`workfile` 按需加载 + 客户端缓存（`wdDiffCache`）；无改动时显示「✓ 工作区干净」；分组显隐由 `WD_SHOW` 控制（顶栏 ☑ 分组菜单），面板/分组折叠用 `WD_FOLDED` / `WD_GROUP_FOLDED`；`#wdPanel` 禁止加 `overflow:hidden`（会裁切绝对定位的分组菜单）
 - **解析细节**：`porcelain -z` 重命名两条记录（`XY <新路径>` + `<旧路径>`）；`numstat -z` 重命名为 `n\tn` + 旧路径 + 新路径；Windows 路径先 `replace(/\\/g,'/')` 再比较

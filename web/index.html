@@ -400,8 +400,19 @@
     padding: 0; cursor: pointer; position: relative;
   }
   .cl-row:hover { background: var(--bg2); }
-  .cl-row.sel { background: rgba(88,166,255,.1); }
-  .cl-row.kbd { outline: 1px dashed var(--accent); outline-offset: -1px; }
+  /* One selection style for both input methods: the highlight says "this is the
+     open commit", the dashed box says "↑/↓ will continue from here". They are
+     intentionally the same element and the same state — a row that is open but
+     carries no outline would leave the keyboard's "where am I" question
+     unanswered, which is exactly what happened when these were two classes.
+     `outline-offset: -1px` keeps the box inside the row so it cannot shift the
+     layout or be clipped by neighbouring rows at the list edges. */
+  .cl-row.sel {
+    background: rgba(88,166,255,.1);
+    outline: 1px dashed var(--accent);
+    outline-offset: -1px;
+    border-radius: 3px;
+  }
   .cl-row.searchHit .cl-dot { outline: 2px solid #f0b429; outline-offset: 1px; }
   /* searchHit is no longer used to mark matches (search now filters rows
      instead of tinting them); the rule stays for the compare/highlight path. */
@@ -420,7 +431,9 @@
   #laneSvg .lane-shadow { fill: none; stroke: var(--bg); stroke-width: 5; stroke-linecap: round; opacity: .95; }
   #laneSvg .lane-node { stroke: var(--bg); stroke-width: 2.5; }
   #laneSvg .lane-node.head { stroke: var(--green); stroke-width: 2.5; }
-  #laneSvg .lane-node.sel { stroke: #f0b429; stroke-width: 3; }
+  /* Selected lane node: same dashed idiom as the row outline, so the marker and
+     its row read as one selection instead of two unrelated highlights. */
+  #laneSvg .lane-node.sel { stroke: #f0b429; stroke-width: 3; stroke-dasharray: 3 2.5; }
   #laneSvg .lane-hit { fill: transparent; cursor: pointer; pointer-events: all; }
   #laneSvg .lane-hit:hover + .lane-node { stroke-width: 3.4; }
   .cl-dot {
@@ -1087,11 +1100,23 @@ let WD_SHOW = loadStored("gg2-wdshow", { staged: true, unstaged: true, untracked
 let WD_FOLDED = loadStored("gg2-wdfolded", false);      // whole panel collapsed
 const WD_GROUP_FOLDED = new Set(loadStored("gg2-wdgroupfolded", [])); // folded group keys
 const WD_SELECT = new Set(); // "groupKey\0path" of checkbox-selected rows
+/* The one cursor. A mouse click and ↑/↓ both write this and nothing else.
+ *
+ * It used to be two cursors — `SELECTED` (hash, written by clicks) for the
+ * highlighted row, and `KEY_IDX` (index into COMMITS, written by ↑/↓) for the
+ * dashed outline. Clicking a row and then pressing ↓ restarted from the top of
+ * the list, because the keyboard cursor had never been told where the mouse
+ * went. Worse, KEY_IDX was an index into `COMMITS` but was computed from a
+ * *filtered row list*, so with a branch filter or a collapsed group the outline
+ * could sit on a commit that was not even the one last pressed.
+ *
+ * A hash is also the only stable identity here: indices shift under filtering,
+ * folding and pagination, so any index-based cursor needs re-syncing after
+ * every render. */
 let SELECTED = null;
 let SEARCH = "";
 let FILTER = "all";        // "all" | "multi"
 let HIGHLIGHT = null;      // branch sha highlighted via legend click (others ghosted)
-let KEY_IDX = -1;          // keyboard cursor: index into COMMITS
 let SCALE = 1;
 let PAN = { x: 0, y: 0 };
 let drag = null;
@@ -1724,15 +1749,10 @@ function render() {
   const list = $("commitList");
   list.innerHTML = "";
 
-  const kbdHash = KEY_IDX >= 0 && KEY_IDX < COMMITS.length ? COMMITS[KEY_IDX].hash : null;
   const commitRows = [];
   let prevCommitEl = null;
   let pendingHead = null;   // group header waiting for its first surviving commit
   const commitRowEls = new Map();   // hash -> row element (for lane geometry)
-  const firstCommitEl = null;
-
-  // gather visible commit hashes in row order (for keyboard nav + line joining)
-  const visibleCommits = ROWS.filter((r) => r.type === "commit" && !(vis && !vis.has(r.hash)) && !(hlSet && !hlSet.has(r.hash)));
 
   // Pre-compute, per branch group, how many of its commits survive the filters.
   // This cannot walk ROWS: buildRows() omits commit rows for collapsed groups,
@@ -1770,23 +1790,22 @@ function render() {
         // rows at all, so emit it here.
         if ((groupCounts.get(r.refname) || 0) === 0) continue;
         if (BRANCH_FOLDED.has(r.refname)) {
-          list.appendChild(buildHeadRow(r, vis, hlSet));
+          list.appendChild(buildHeadRow(r));
         } else {
           pendingHead = pendingHead || r;
         }
         continue;
       }
-      list.appendChild(buildHeadRow(r, vis, hlSet));
+      list.appendChild(buildHeadRow(r));
       continue;
     }
     const c = map.get(r.hash);
     if (!c) continue;
     if (!passesFilters(c)) continue;          // search / time range: hide it
-    const hidden = (vis && !vis.has(c.hash)) || (hlSet && !hlSet.has(c.hash));
-    if (hidden) continue;
+    if ((vis && !vis.has(c.hash)) || (hlSet && !hlSet.has(c.hash))) continue;
     // first surviving commit of a group: emit its header now
-    if (pendingHead) { list.appendChild(buildHeadRow(pendingHead, vis, hlSet)); pendingHead = null; }
-    const row = buildCommitRow(c, hidden, kbdHash === c.hash, vis, hlSet);
+    if (pendingHead) { list.appendChild(buildHeadRow(pendingHead)); pendingHead = null; }
+    const row = buildCommitRow(c);
     list.appendChild(row);
     commitRowEls.set(c.hash, row);
     commitRows.push(row);
@@ -1998,11 +2017,12 @@ async function loadMore() {
   }
 }
 
-function buildCommitRow(c, hidden, isKbd, vis, hlSet) {
+function buildCommitRow(c) {
   const row = document.createElement("div");
-  row.className = "cl-row"
-    + (SELECTED === c.hash ? " sel" : "")
-    + (isKbd ? " kbd" : "");
+  // Single source of truth: SELECTED drives BOTH the background highlight and
+  // the dashed outline, so "the row the keyboard continues from" and "the row
+  // whose detail is open" can never drift apart.
+  row.className = "cl-row" + (SELECTED === c.hash ? " sel" : "");
   row.dataset.hash = c.hash;
   const color = branchColorOf(c.hash);
 
@@ -2072,7 +2092,7 @@ function buildCommitRow(c, hidden, isKbd, vis, hlSet) {
   return row;
 }
 
-function buildHeadRow(r, vis, hlSet) {
+function buildHeadRow(r) {
   const row = document.createElement("div");
   const folded = BRANCH_FOLDED.has(r.refname);
   row.className = "cl-head" + (folded ? "" : " open");
@@ -3628,11 +3648,10 @@ async function load(wsOverride) {
       saveStored("gg2-brfolded", [...BRANCH_FOLDED]);
     }
     fillFilterMenu();
-    SELECTED = null;
-    // No keyboard cursor until the user actually presses ↑/↓: seeding it with 0
-    // drew a dashed .kbd focus ring on the first row of every load, which reads
+    // Nothing is selected until the user clicks or presses ↑/↓. Seeding a cursor
+    // here would draw the dashed box on the first row of every load, which reads
     // as "this row is selected" when nothing was selected.
-    KEY_IDX = -1;
+    SELECTED = null;
     setDetailOpen(false);
     REFS_SIG = null;   // full load: let the next poll re-baseline
     render();
@@ -4539,8 +4558,9 @@ async function openGithubCommit(hash) {
 
 /* ---- shortcut panel (Ctrl+/) ---- */
 const SHORTCUTS = [
-  ["↑ / ↓ 或 j / k", "在提交间移动选中"],
-  ["Enter", "查看选中提交的详情 / diff"],
+  ["↑ / ↓ 或 j / k", "从当前选中（含鼠标点选的）向上/下切换提交，并同步打开详情"],
+  ["鼠标点击", "选中提交、打开详情；之后 ↑/↓ 从这里继续"],
+  ["Enter", "重新打开当前选中提交的详情（方向键已自动打开，按习惯保留）"],
   ["Ctrl+C", "复制提交哈希"],
   ["Esc", "关闭弹窗 / 详情面板"],
   ["Ctrl+/", "打开 / 关闭本快捷键面板"],
@@ -4658,18 +4678,16 @@ setInterval(autoRefreshTick, 5000);
  * auto-refresh guard (a reload in flight would otherwise starve it). */
 setInterval(checkSessionWorkspace, 3000);
 
-/* ---- keyboard navigation ---- */
+/* ---- keyboard navigation ----
+ * The list is read back from the DOM rather than recomputed from buildRows().
+ * buildRows() only knows about branch folding; render() additionally drops rows
+ * via passesFilters() and the legend highlight. Recomputing here meant the
+ * cursor could be moved onto a commit that had no row on screen (search filter
+ * active, or a branch highlighted via the legend) — the arrow key appeared to
+ * do nothing, or jumped two commits at once. Whatever is in the DOM *is* what
+ * the user can see and step through. */
 function kbdVisibleList() {
-  // hashes of currently visible commit rows, in display order
-  const vis = visibleSet();
-  const ROWS = buildRows(vis);
-  const out = [];
-  for (const r of ROWS) {
-    if (r.type !== "commit") continue;
-    if (vis && !vis.has(r.hash)) continue;
-    out.push(r.hash);
-  }
-  return out;
+  return [...$("commitList").querySelectorAll(".cl-row")].map((el) => el.dataset.hash);
 }
 window.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape") {
@@ -4707,22 +4725,31 @@ window.addEventListener("keydown", (ev) => {
   // Arrow keys move AND open the commit in one step. A cursor that only moved a
   // dashed outline forced a pointless Enter — in a history browser the thing you
   // are stepping through is the detail, not a selection to be confirmed.
-  // selectCommit() re-renders and handles scrolling, so the old render() calls
-  // here would only paint twice.
+  //
+  // The step always starts from SELECTED, which the mouse writes too. Clicking
+  // row 5 and pressing ↓ now lands on row 6, whatever the list length is and
+  // whether or not a filter is active. `list.indexOf` may return -1 (the
+  // selected commit is not currently rendered — filtered out, inside a
+  // collapsed branch, or beyond the loaded page); in that case ↓ starts at the
+  // top and ↑ at the bottom, so the key always produces a visible move rather
+  // than doing nothing.
+  //
+  // selectCommit() renders and scrolls, so no render() call is needed here.
+  const cur = SELECTED === null ? -1 : list.indexOf(SELECTED);
   if (ev.key === "ArrowDown" || ev.key === "j") {
     ev.preventDefault();
-    KEY_IDX = Math.min(list.length - 1, KEY_IDX < 0 ? 0 : KEY_IDX + 1);
-    selectCommit(list[KEY_IDX], true);
+    const i = cur < 0 ? 0 : Math.min(list.length - 1, cur + 1);
+    selectCommit(list[i], true);
   } else if (ev.key === "ArrowUp" || ev.key === "k") {
     ev.preventDefault();
-    KEY_IDX = KEY_IDX < 0 ? 0 : Math.max(0, KEY_IDX - 1);
-    selectCommit(list[KEY_IDX], true);
+    const i = cur < 0 ? list.length - 1 : Math.max(0, cur - 1);
+    selectCommit(list[i], true);
   } else if (ev.key === "Enter") {
     // Kept as a no-op confirmation of the current row: harmless, and some people
     // still press it out of habit after arriving with the mouse.
-    if (KEY_IDX >= 0 && KEY_IDX < list.length) {
+    if (SELECTED) {
       ev.preventDefault();
-      selectCommit(list[KEY_IDX]);
+      selectCommit(SELECTED);
     }
   }
 });
