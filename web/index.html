@@ -187,31 +187,74 @@
     overflow: hidden;
   }
   /* ===== header ===== */
+  /* Three tracks: two equal flexible edges and an auto-sized centre. The equal
+     1fr edges are what centres .hd-center on the header itself — a spacer-based
+     flex row centres the centre group on the *leftover* space, so the group
+     drifts as soon as the two side groups differ in width. */
   header {
     height: 48px; flex: none;
-    display: flex; align-items: center; gap: 10px;
-    padding: 0 14px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center; gap: 12px;
+    padding: 0 12px;
     border-bottom: 1px solid var(--border);
     background: var(--bg2);
     /* z-index 10: above #statsBar/#main (z-index 1) so the header's own
-       dropdowns (#themeMenu, #filterMenu) are not covered by them */
+       dropdowns (#filterMenu, #dateMenu) are not covered by them */
     position: relative; z-index: 10;
   }
-  header .title { font-weight: 700; font-size: 14px; letter-spacing: .2px; white-space: nowrap; }
-  .themeWrap { position: relative; }
-  #themeMenu {
-    display: none; position: absolute; top: 32px; right: 0; z-index: 30;
-    min-width: 158px; background: var(--bg2); border: 1px solid var(--border);
-    border-radius: 10px; padding: 5px; box-shadow: 0 10px 34px rgba(0,0,0,.45);
+  .hd-left, .hd-center, .hd-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .hd-center { justify-content: center; }
+  .hd-right { justify-content: flex-end; }
+  header .title { font-weight: 700; font-size: 14px; letter-spacing: .2px; white-space: nowrap; flex: none; }
+  /* Icon-only control: a 30px box around a 16px stroke glyph. The verb lives in
+     the tooltip and the aria-label, so dropping the text loses nothing for a
+     hovering mouse or a screen reader — it only quiets the row. */
+  .icon-btn {
+    position: relative; flex: none;
+    width: 30px; height: 30px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid transparent; border-radius: 9px;
+    background: transparent; color: var(--text2);
+    cursor: pointer;
+    transition: background .12s ease, color .12s ease, border-color .12s ease, transform .12s ease;
   }
-  #themeMenu.show { display: block; }
-  #themeMenu label {
-    display: flex; align-items: center; gap: 7px;
-    padding: 5px 9px; border-radius: 6px; cursor: pointer;
-    font-size: 12.5px; white-space: nowrap;
+  .icon-btn > svg { width: 16px; height: 16px; display: block; }
+  .icon-btn:hover { background: var(--bg4); color: var(--text); }
+  .icon-btn:active { transform: scale(.94); }
+  .icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .icon-btn[disabled] { opacity: .45; cursor: default; }
+  .icon-btn[disabled]:hover { background: transparent; color: var(--text2); }
+  .icon-btn.busy > svg { animation: ggSpin .9s linear infinite; }
+  @keyframes ggSpin { to { transform: rotate(360deg); } }
+  /* "something behind the gear is not at its default" marker */
+  .icon-btn.dot::after {
+    content: ''; position: absolute; top: 5px; right: 5px;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 0 2px var(--bg2);
   }
-  #themeMenu label:hover { background: var(--bg4); }
-  #themeMenu input { accent-color: var(--accent); cursor: pointer; }
+  /* Hairline before the gear. Settings is a different kind of control from the
+     four repo actions to its left, and at icon size an unseparated 5px gap reads
+     as "another action on this repo". */
+  .hd-sep {
+    flex: none; width: 1px; height: 18px; margin: 0 1px;
+    background: var(--border);
+  }
+  .icon-btn.has-upd {
+    color: var(--accent); border-color: rgba(88,166,255,.45); background: rgba(88,166,255,.1);
+  }
+  /* labelled chips (branch filter / date): icon + text, lighter than a button */
+  .pill-btn {
+    height: 30px; padding: 0 11px;
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 1px solid var(--border); border-radius: 9px;
+    background: var(--bg3); color: var(--text2);
+    cursor: pointer; font-size: 12px; white-space: nowrap;
+    transition: background .12s ease, color .12s ease, border-color .12s ease;
+  }
+  .pill-btn > svg { width: 14px; height: 14px; flex: none; }
+  .pill-btn:hover { border-color: var(--text3); background: var(--bg4); color: var(--text); }
+  .pill-btn.on { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,.1); }
   /* stats bar under the header */
   #statsBar {
     position: relative; z-index: 1;
@@ -222,33 +265,35 @@
   }
   #statsBar b { color: var(--text2); font-weight: 600; }
   #statsBar .st-num { color: var(--accent); font-weight: 700; }
-  header .repo { color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 34%; font-size: 12px; }
+  /* The path is redundant with the switcher's own tooltip once a repo is chosen,
+     so it yields space first: max-width in ch keeps a long monorepo path from
+     pushing the centre group off centre. */
+  header .repo { color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 26ch; font-size: 11.5px; }
   header select#repoSwitch {
-    max-width: 240px; height: 28px;
-    border: 1px solid var(--border); border-radius: 7px;
+    max-width: 200px; height: 30px; flex: none;
+    border: 1px solid var(--border); border-radius: 9px;
     background: var(--bg3); color: var(--text);
     padding: 0 6px; font-size: 11.5px; outline: none; cursor: pointer;
   }
   header select#repoSwitch:focus { border-color: var(--accent); }
-  header .spacer { flex: 1; }
-  header input#searchBox {
-    height: 28px; width: 210px;
-    border: 1px solid var(--border); border-radius: 7px;
-    background: var(--bg3); color: var(--text);
-    padding: 0 10px; font-size: 12px; outline: none;
+  /* search: the magnifier lives inside the field so the pill reads as one control */
+  .searchWrap { position: relative; display: flex; align-items: center; flex: 0 1 232px; min-width: 132px; }
+  .searchWrap > svg {
+    position: absolute; left: 9px; width: 14px; height: 14px;
+    color: var(--text3); pointer-events: none;
   }
-  header input#searchBox:focus { border-color: var(--accent); }
+  header input#searchBox {
+    height: 30px; width: 100%; padding: 0 10px 0 29px;
+    border: 1px solid var(--border); border-radius: 9px;
+    background: var(--bg3); color: var(--text);
+    font-size: 12px; outline: none;
+    transition: border-color .12s ease, background .12s ease;
+  }
+  header input#searchBox:hover { border-color: var(--text3); }
+  header input#searchBox:focus { border-color: var(--accent); background: var(--bg); }
   header input#searchBox::placeholder { color: var(--text3); }
   /* date range popover */
-  .dateWrap { position: relative; }
-  #btnDate {
-    height: 28px; padding: 0 10px;
-    border: 1px solid var(--border); border-radius: 7px;
-    background: var(--bg3); color: var(--text);
-    cursor: pointer; font-size: 12px; white-space: nowrap;
-  }
-  #btnDate:hover { border-color: var(--text3); background: var(--bg4); }
-  #btnDate.on { border-color: var(--accent); color: var(--accent); }
+  .dateWrap { position: relative; flex: none; }
   #dateMenu {
     display: none; position: absolute; top: 32px; right: 0; z-index: 30;
     min-width: 240px; padding: 10px;
@@ -280,24 +325,7 @@
   #dateMenu .dm-foot button:hover { border-color: var(--text3); }
   #dateMenu .dm-foot button.primary { background: var(--accent); border-color: var(--accent); color: #04260f; font-weight: 600; }
   /* filter menu lives in .filterWrap; the old select rule is removed */
-  .filterWrap { position: relative; }
-  /* directory picker removed (manual repo selection dropped) */
-  #btnFilter {
-    height: 28px; padding: 0 10px;
-    border: 1px solid var(--border); border-radius: 7px;
-    background: var(--bg3); color: var(--text);
-    cursor: pointer; font-size: 12px; white-space: nowrap;
-  }
-  #btnFilter:hover { border-color: var(--text3); background: var(--bg4); }
-  /* view toggle: becomes "accent" when flat mode is on */
-  #btnFlat {
-    height: 28px; padding: 0 10px;
-    border: 1px solid var(--border); border-radius: 7px;
-    background: var(--bg3); color: var(--text);
-    cursor: pointer; font-size: 12px; white-space: nowrap;
-  }
-  #btnFlat:hover { border-color: var(--text3); background: var(--bg4); }
-  #btnFlat.on { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,.12); }
+  .filterWrap { position: relative; flex: none; }
   #filterMenu {
     display: none; position: absolute; top: 32px; right: 0; z-index: 30;
     min-width: 200px; max-height: 340px; overflow: auto;
@@ -321,18 +349,11 @@
   #filterMenu label input { accent-color: var(--accent); cursor: pointer; }
   #filterMenu label .fm-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
   #filterMenu .fm-hint { font-size: 10.5px; color: var(--text3); padding: 4px 8px 2px; }
-  header button {
-    height: 28px; padding: 0 12px;
-    border: 1px solid var(--border); border-radius: 7px;
-    background: var(--bg3); color: var(--text);
-    cursor: pointer; font-size: 12px; white-space: nowrap;
-  }
-  header button:hover { border-color: var(--text3); background: var(--bg4); }
+  /* No catch-all `header button` rule: every toolbar control is either
+     .icon-btn or .pill-btn. A generic rule would leak the old 28px/12px-padding
+     box onto both and silently win on any property they do not redeclare. */
   header .hint { color: var(--text3); font-size: 11px; white-space: nowrap; }
-  #searchCount { color: var(--text3); font-size: 11px; min-width: 40px; }
-  header button.on {
-    border-color: var(--accent); color: var(--accent);
-  }
+  #searchCount { color: var(--text3); font-size: 11px; white-space: nowrap; }
   /* --- context menu --- */
   #ctxMenu {
     position: fixed; z-index: 40; display: none; min-width: 190px;
@@ -381,7 +402,26 @@
     #legend { display: none; }
     header .hint { display: none; }
     .gg-sub { display: none; }
-    #searchBox { width: 140px; }
+    /* Drop the redundant path first, then shrink the search field; the icon
+       group and the centred filters keep their hit areas. */
+    header .repo { display: none; }
+    .searchWrap { flex-basis: 150px; min-width: 96px; }
+    header { gap: 8px; padding: 0 8px; }
+  }
+  @media (max-width: 560px) {
+    /* Below this width three groups cannot coexist on one line. The centre
+       group wraps to a second row so the search field never collapses to the
+       width of its own icon. */
+    header {
+      height: auto; padding: 6px 8px 8px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas: "left right" "center center";
+      row-gap: 6px;
+    }
+    .hd-left { grid-area: left; }
+    .hd-right { grid-area: right; }
+    .hd-center { grid-area: center; justify-content: flex-start; }
+    .searchWrap { flex: 1 1 auto; }
   }
   /* --- commit list (GitHub-style) --- */
   /* transparent: the themed background + #ggDeco ambient layer show through */
@@ -768,6 +808,69 @@
     flex: none; font-family: Consolas, monospace; font-size: 11px; color: var(--accent);
     border: 1px solid var(--border); border-radius: 5px; padding: 1px 7px; background: var(--bg3);
   }
+  /* ---- settings (second-level page behind the gear) ---- */
+  #settingsDlg {
+    position: fixed; inset: 0; z-index: 60; display: none;
+    background: rgba(0,0,10,.55); align-items: center; justify-content: center;
+  }
+  #settingsDlg.show { display: flex; }
+  #settingsDlg .dlg-box {
+    width: min(540px, 92%); background: var(--bg2);
+    border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 14px 48px rgba(0,0,0,.55); overflow: hidden;
+    display: flex; flex-direction: column; max-height: 86vh;
+  }
+  #settingsDlg .dlg-body { max-height: none; flex: 1; overflow: auto; padding: 4px 0 12px; }
+  .st-section { padding: 12px 18px 4px; }
+  .st-label {
+    font-size: 11px; font-weight: 700; letter-spacing: .5px;
+    color: var(--text3); margin-bottom: 8px;
+  }
+  .st-note { font-size: 11.5px; color: var(--text3); margin-top: 7px; line-height: 1.6; }
+  /* segmented control: two mutually exclusive views, both visible at once so the
+     choice reads as a choice rather than as a toggle whose other side is hidden */
+  .st-seg { display: flex; gap: 6px; }
+  .st-seg button {
+    flex: 1; min-width: 0; height: 52px; padding: 0 10px;
+    display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px;
+    border: 1px solid var(--border); border-radius: 9px;
+    background: var(--bg3); color: var(--text2);
+    cursor: pointer; text-align: left;
+    transition: border-color .12s ease, background .12s ease, color .12s ease;
+  }
+  .st-seg button:hover { border-color: var(--text3); background: var(--bg4); }
+  .st-seg button.on {
+    border-color: var(--accent); color: var(--text);
+    background: rgba(88,166,255,.1);
+  }
+  .st-seg .se-t { font-size: 12.5px; font-weight: 600; color: var(--text); }
+  .st-seg .se-d { font-size: 10.5px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* theme grid: the swatch *is* the preview, so the picker shows what it does */
+  .st-themes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .st-theme {
+    display: flex; align-items: center; gap: 8px;
+    height: 38px; padding: 0 10px; min-width: 0;
+    border: 1px solid var(--border); border-radius: 9px;
+    background: var(--bg3); color: var(--text2);
+    cursor: pointer; font-size: 12px; text-align: left;
+    transition: border-color .12s ease, background .12s ease, color .12s ease;
+  }
+  .st-theme:hover { border-color: var(--text3); background: var(--bg4); }
+  .st-theme.on { border-color: var(--accent); color: var(--text); background: rgba(88,166,255,.1); }
+  .st-theme .sw {
+    flex: none; width: 14px; height: 14px; border-radius: 50%;
+    border: 1px solid rgba(127,127,127,.45);
+  }
+  /* Selection ring on the card, not inside the chip: an inset shadow on the
+     swatch turned every chip into a donut, which read as an icon rather than a
+     colour. */
+  .st-theme.on .sw { border-color: var(--accent); }
+  .st-theme .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  @media (max-width: 520px) {
+    .st-themes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .st-seg { flex-direction: column; }
+    .st-seg button { height: auto; padding: 9px 10px; }
+  }
   /* folder picker ("打开文件夹": browse the disk and open any folder as a repo) */
   #pickdirDlg {
     position: fixed; inset: 0; z-index: 60; display: none;
@@ -906,57 +1009,91 @@
 <body>
 <div id="ggDeco" aria-hidden="true"></div>
 <header>
-  <span class="title">Git 图谱</span>
-  <span class="repo" id="repoLabel" title=""></span>
-  <select id="repoSwitch" title="切换仓库"></select>
-  <span class="spacer"></span>
-  <input id="searchBox" type="text" placeholder="搜索提交（消息/作者/哈希）…">
-  <span id="searchCount"></span>
-  <div class="dateWrap">
-    <button id="btnDate" title="按提交日期筛选">📅 日期</button>
-    <div id="dateMenu">
-      <div class="dm-row">
-        <label>从 <input type="date" id="dateFrom"></label>
-      </div>
-      <div class="dm-row">
-        <label>到 <input type="date" id="dateTo"></label>
-      </div>
-      <div class="dm-hint">只填一端 = 单侧边界；都空 = 不限时间</div>
-      <div class="dm-foot">
-        <button id="dateClear">清除</button>
-        <button id="dateApply" class="primary">应用</button>
-      </div>
-    </div>
+  <div class="hd-left">
+    <span class="title">Git 图谱</span>
+    <span class="repo" id="repoLabel" title=""></span>
+    <select id="repoSwitch" title="切换仓库"></select>
   </div>
-  <button id="btnFlat" title="切换视图：平铺（泳道连续）/ 按分支分组">▤ 平铺</button>
-  <div class="filterWrap">
-    <button id="btnFilter" title="选择显示哪些分支">☑ 分支过滤</button>
-    <div id="filterMenu">
-      <label class="fm-all"><input type="checkbox" id="fAll" checked> 全选（显示全部提交）</label>
-      <div class="fm-hint">勾选 = 显示该分支 · 不勾 = 隐藏</div>
-      <div id="fmBranches"></div>
+
+  <div class="hd-center">
+    <div class="filterWrap">
+      <button id="btnFilter" class="pill-btn" title="选择显示哪些分支" aria-label="分支过滤">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true">
+          <path d="M4 6h16M7 12h10M10 18h4"/>
+        </svg>
+        <span>分支过滤</span>
+      </button>
+      <div id="filterMenu">
+        <label class="fm-all"><input type="checkbox" id="fAll" checked> 全选（显示全部提交）</label>
+        <div class="fm-hint">勾选 = 显示该分支 · 不勾 = 隐藏</div>
+        <div id="fmBranches"></div>
+      </div>
     </div>
+    <div class="dateWrap">
+      <button id="btnDate" class="pill-btn" title="按提交日期筛选" aria-label="日期筛选">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true">
+          <rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>
+        </svg>
+        <span>日期</span>
+      </button>
+      <div id="dateMenu">
+        <div class="dm-row">
+          <label>从 <input type="date" id="dateFrom"></label>
+        </div>
+        <div class="dm-row">
+          <label>到 <input type="date" id="dateTo"></label>
+        </div>
+        <div class="dm-hint">只填一端 = 单侧边界；都空 = 不限时间</div>
+        <div class="dm-foot">
+          <button id="dateClear">清除</button>
+          <button id="dateApply" class="primary">应用</button>
+        </div>
+      </div>
+    </div>
+    <div class="searchWrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" focusable="false" aria-hidden="true">
+        <circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/>
+      </svg>
+      <input id="searchBox" type="text" placeholder="搜索提交（消息/作者/哈希）…" aria-label="搜索提交">
+    </div>
+    <span id="searchCount"></span>
   </div>
-  <button id="btnOpenDir" title="打开其他文件夹的 Git 仓库（浏览并添加任意工作区）">📂 打开</button>
-  <button id="btnFetch" title="拉取远程更新（git fetch）">⬇ 拉取</button>
-  <button id="btnPush" title="推送当前分支到远程（git push）">⬆ 推送</button>
-  <button id="btnRefresh" title="重新加载">↻ 刷新</button>
-  <button id="btnUpdate" title="检查插件新版本" style="display:none">🔄 检查更新</button>
-  <div class="themeWrap">
-    <button id="btnTheme" title="切换主题">◐ 主题</button>
-    <div id="themeMenu">
-      <label><input type="radio" name="ggTheme" value="auto"> 自动（跟随界面）</label>
-      <label><input type="radio" name="ggTheme" value="dark"> 深色</label>
-      <label><input type="radio" name="ggTheme" value="light"> 浅色</label>
-      <label><input type="radio" name="ggTheme" value="sakura"> 🌸 樱花</label>
-      <label><input type="radio" name="ggTheme" value="ocean"> 🌊 海洋</label>
-      <label><input type="radio" name="ggTheme" value="forest"> 🌲 森林</label>
-      <label><input type="radio" name="ggTheme" value="night"> 🌙 夜空</label>
-      <label><input type="radio" name="ggTheme" value="candy"> 🍬 糖果</label>
-      <label><input type="radio" name="ggTheme" value="business"> 💼 商务</label>
-      <label><input type="radio" name="ggTheme" value="starry"> ✨ 星河</label>
-      <label><input type="radio" name="ggTheme" value="tech"> 🤖 科技</label>
-    </div>
+
+  <div class="hd-right">
+    <button id="btnOpenDir" class="icon-btn" title="打开文件夹：浏览磁盘，把任意 Git 仓库添加进来" aria-label="打开文件夹">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true">
+        <path d="M3 7.5A2 2 0 0 1 5 5.5h3.6a2 2 0 0 1 1.5.7l.9 1.1H19a2 2 0 0 1 2 2v7.2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+      </svg>
+    </button>
+    <button id="btnFetch" class="icon-btn" title="拉取远程更新（git fetch --all --prune）" aria-label="拉取">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true">
+        <path d="M12 4v10.5M7.5 10.5L12 15l4.5-4.5M4.5 19h15"/>
+      </svg>
+    </button>
+    <button id="btnPush" class="icon-btn" title="推送当前分支到远程（git push）" aria-label="推送">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true">
+        <path d="M12 20V9.5M7.5 13.5L12 9l4.5 4.5M4.5 5h15"/>
+      </svg>
+    </button>
+    <button id="btnRefresh" class="icon-btn" title="重新加载（刷新仓库数据）" aria-label="刷新">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true">
+        <path d="M20 12a8 8 0 1 1-2.6-5.9"/>
+        <path d="M20 4.5V9h-4.5"/>
+      </svg>
+    </button>
+    <button id="btnUpdate" class="icon-btn" title="检查插件新版本" aria-label="检查更新" style="display:none">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true">
+        <path d="M12 2.8 4 7.1v9.8L12 21.2l8-4.3V7.1z"/>
+        <path d="M4 7.1 12 11.4l8-4.3M12 11.4v9.8"/>
+      </svg>
+    </button>
+    <span class="hd-sep" aria-hidden="true"></span>
+    <button id="btnSettings" class="icon-btn" title="设置（视图、主题、快捷键）" aria-label="设置">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true">
+        <circle cx="12" cy="12" r="3.1"/>
+        <path d="M12.6 2.6h-1.2a1.9 1.9 0 0 0-1.9 1.9v.5a1.5 1.5 0 0 1-.8 1.3 1.5 1.5 0 0 1-1.5-.1l-.4-.2a1.9 1.9 0 0 0-2.6.7l-.6 1a1.9 1.9 0 0 0 .7 2.6l.4.3a1.5 1.5 0 0 1 0 2.6l-.4.3a1.9 1.9 0 0 0-.7 2.6l.6 1a1.9 1.9 0 0 0 2.6.7l.4-.2a1.5 1.5 0 0 1 1.5-.1 1.5 1.5 0 0 1 .8 1.3v.5a1.9 1.9 0 0 0 1.9 1.9h1.2a1.9 1.9 0 0 0 1.9-1.9v-.5a1.5 1.5 0 0 1 .8-1.3 1.5 1.5 0 0 1 1.5.1l.4.2a1.9 1.9 0 0 0 2.6-.7l.6-1a1.9 1.9 0 0 0-.7-2.6l-.4-.3a1.5 1.5 0 0 1 0-2.6l.4-.3a1.9 1.9 0 0 0 .7-2.6l-.6-1a1.9 1.9 0 0 0-2.6-.7l-.4.2a1.5 1.5 0 0 1-1.5.1 1.5 1.5 0 0 1-.8-1.3v-.5a1.9 1.9 0 0 0-1.9-1.9z"/>
+      </svg>
+    </button>
   </div>
 </header>
 <div id="statsBar"></div>
@@ -1036,6 +1173,35 @@
       <div style="font-size:11px;color:var(--text3);margin-top:8px">绿色的 <span style="color:var(--green)">git</span> 标记表示该文件夹本身是 Git 仓库；选中仓库内的子文件夹也会自动定位到仓库根。</div>
     </div>
     <div class="dlg-foot"><button id="pdClose">关闭</button></div>
+  </div>
+</div>
+<div id="settingsDlg">
+  <div class="dlg-box">
+    <div class="dlg-head"><span class="dlg-ico">⚙️</span>设置</div>
+    <div class="dlg-body">
+      <div class="st-section">
+        <div class="st-label">视图</div>
+        <div class="st-seg" id="stView">
+          <button type="button" data-view="grouped">
+            <span class="se-t">按分支分组</span>
+            <span class="se-d">组头可折叠，不画泳道</span>
+          </button>
+          <button type="button" data-view="flat">
+            <span class="se-t">平铺</span>
+            <span class="se-d">按时间线排列，左侧画泳道</span>
+          </button>
+        </div>
+      </div>
+      <div class="st-section">
+        <div class="st-label">主题</div>
+        <div class="st-themes" id="stThemes"></div>
+        <div class="st-note">「自动」跟随 DSH 界面的深浅色；8 种风格方案各带专属动态背景。</div>
+      </div>
+    </div>
+    <div class="dlg-foot">
+      <button id="stShortcut">快捷键</button>
+      <button id="stClose">关闭</button>
+    </div>
   </div>
 </div>
 <script>
@@ -1199,11 +1365,10 @@ function applyTheme() {
   else if (themePref === "light") root.classList.add("gg-light");
   else if (themePref !== "dark") root.classList.add("gg-theme-" + themePref);
   renderBgDecor();
-  // reflect in the menu
-  const radios = document.querySelectorAll("#themeMenu input");
-  for (const r of radios) r.checked = (r.value === themePref);
-  const btn = $("btnTheme");
-  if (btn) btn.title = "主题：" + THEME_LABELS[themePref];
+  // Full settings sync, not just the picker: the gear's "not at default" dot is
+  // derived from the theme too, and refreshing only the picker left the dot on
+  // screen after switching back to a default theme.
+  syncSettingsState();
 }
 
 /* decorative background layer, ported from 拾光记 renderBgDecor */
@@ -1296,23 +1461,100 @@ function followParentTheme() {
       .observe(parent, { attributes: true, attributeFilter: ["data-ds-dark-theme"] });
   } catch { /* cross-origin: keep default dark */ }
 }
-$("btnTheme").addEventListener("click", (ev) => {
-  ev.stopPropagation();
-  $("themeMenu").classList.toggle("show");
-});
-$("themeMenu").addEventListener("click", (ev) => ev.stopPropagation());
-$("themeMenu").addEventListener("change", (ev) => {
-  const v = ev.target.value;
-  if (v && THEMES.includes(v)) {
-    themePref = v;
-    try { localStorage.setItem("gg2-theme", themePref); } catch { /* ignore */ }
-    applyTheme();
-    $("themeMenu").classList.remove("show");
+
+/* ===================== settings dialog =====================
+ * The per-repo view (grouped / flat) and the theme are both set-once, rarely
+ * revisited choices. They used to sit in the header as `▤ 平铺` and `◐ 主题`,
+ * which put two permanent buttons in the most expensive strip of the page for
+ * two controls a user touches once. They now live one level down, behind the
+ * gear, leaving the header for things you act on while reading history.
+ *
+ * "二级页面" here is a full dialog rather than a dropdown: the theme list is 11
+ * entries and needs the room, and a dropdown crowded next to the filter and
+ * date popovers would be a third layer of the same pattern. */
+const THEME_SWATCHES = {
+  auto: "linear-gradient(135deg,#2b3440 50%,#dfe6ee 50%)",
+  dark: "#12171f",
+  light: "#f7f9fb",
+  sakura: "#ff9ec7",
+  ocean: "#4aa8d8",
+  forest: "#4caf50",
+  night: "#28284a",
+  candy: "#ffb74d",
+  business: "#7f9aa6",
+  starry: "#3a2a7a",
+  tech: "#00b0ff",
+};
+/* Plain names for the picker. THEME_LABELS carries the emoji as well, and using
+ * it here printed both a colour chip and an emoji for the same theme — two
+ * symbols for one meaning, and the emoji is the one that does not preview
+ * anything. The emoji survive in the tooltip and the README. */
+const THEME_NAMES = {
+  auto: "自动", dark: "深色", light: "浅色", sakura: "樱花", ocean: "海洋",
+  forest: "森林", night: "夜空", candy: "糖果", business: "商务",
+  starry: "星河", tech: "科技",
+};
+let settingsBuilt = false;
+function buildSettings() {
+  if (settingsBuilt) return;
+  settingsBuilt = true;
+  const box = $("stThemes");
+  for (const id of THEMES) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "st-theme";
+    b.dataset.theme = id;
+    b.title = "主题：" + THEME_LABELS[id];
+    const sw = document.createElement("span");
+    sw.className = "sw";
+    sw.style.background = THEME_SWATCHES[id] || "#666";
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = THEME_NAMES[id] || id;
+    b.appendChild(sw);
+    b.appendChild(nm);
+    b.addEventListener("click", () => setTheme(id));
+    box.appendChild(b);
   }
-});
-document.addEventListener("click", (ev) => {
-  if (!ev.target.closest(".themeWrap")) $("themeMenu").classList.remove("show");
-});
+  for (const b of $("stView").querySelectorAll("button")) {
+    b.addEventListener("click", () => setFlatMode(b.dataset.view === "flat"));
+  }
+}
+function syncThemePicker() {
+  const box = $("stThemes");
+  if (!box) return;
+  for (const b of box.children) b.classList.toggle("on", b.dataset.theme === themePref);
+}
+/* One setter for both entry points; the header has no theme control any more,
+ * so a stale `.on` here is the only way the picker could disagree with reality. */
+function setTheme(id) {
+  if (!THEMES.includes(id) || id === themePref) return;
+  themePref = id;
+  try { localStorage.setItem("gg2-theme", themePref); } catch { /* ignore */ }
+  prefsSync({ "gg2-theme": themePref });
+  applyTheme();
+}
+function syncSettingsState() {
+  const seg = $("stView");
+  if (seg) for (const b of seg.querySelectorAll("button")) b.classList.toggle("on", (b.dataset.view === "flat") === FLAT_MODE);
+  syncThemePicker();
+  const gear = $("btnSettings");
+  if (gear) {
+    const custom = themePref !== "auto" && themePref !== "dark";
+    gear.classList.toggle("dot", custom || FLAT_MODE);
+    gear.title = "设置（视图、主题、快捷键）" + (custom || FLAT_MODE ? " · 有非默认项" : "");
+  }
+}
+function toggleSettings(force) {
+  const d = $("settingsDlg");
+  const show = force !== undefined ? force : !d.classList.contains("show");
+  if (show) { buildSettings(); syncSettingsState(); }
+  d.classList.toggle("show", show);
+}
+$("btnSettings").addEventListener("click", (ev) => { ev.stopPropagation(); toggleSettings(); });
+$("stClose").addEventListener("click", () => toggleSettings(false));
+$("stShortcut").addEventListener("click", () => { toggleSettings(false); toggleShortcutDlg(true); });
+$("settingsDlg").addEventListener("click", (ev) => { if (ev.target === $("settingsDlg")) toggleSettings(false); });
 
 /* ===================== api ===================== */
 /* Server ops that mutate state. These must be sent as POST: a cross-site page
@@ -4022,23 +4264,27 @@ $("btnFilter").addEventListener("click", (ev) => {
   $("filterMenu").classList.toggle("show");
 });
 
-/* Flat / grouped view toggle. Flat mode drops the branch group headers so the
- * lane graph runs continuously — a header row has no commit node, which would
- * otherwise leave a visible gap in every lane crossing it. */
-function syncFlatBtn() {
-  $("btnFlat").classList.toggle("on", FLAT_MODE);
-  $("btnFlat").title = FLAT_MODE
-    ? "当前：平铺视图（含泳道图）· 点击切换到按分支分组"
-    : "当前：按分支分组（无泳道图）· 点击切换到平铺视图";
+/* Flat / grouped view. Flat mode drops the branch group headers so the lane
+ * graph runs continuously — a header row has no commit node, which would
+ * otherwise leave a visible gap in every lane crossing it.
+ *
+ * The control now lives in Settings, but the two values are absolute
+ * ("grouped" / "flat") rather than a toggle: the segmented control shows both
+ * options at once, so a click means "be this", not "flip that". A toggle would
+ * have needed the button to be rotated by every state change, and a mis-click
+ * would then be indistinguishable from a double-click. */
+function setFlatMode(on) {
+  on = Boolean(on);
+  if (on !== FLAT_MODE) {
+    FLAT_MODE = on;
+    saveStored("gg2-flat", FLAT_MODE);
+    prefsSync({ "gg2-flat": FLAT_MODE });
+    render();
+  }
+  syncSettingsState();
 }
-$("btnFlat").addEventListener("click", (ev) => {
-  ev.stopPropagation();
-  FLAT_MODE = !FLAT_MODE;
-  saveStored("gg2-flat", FLAT_MODE);
-  prefsSync({ "gg2-flat": FLAT_MODE });
-  syncFlatBtn();
-  render();
-});
+/* Kept as the name every call site already uses (prefs restore, startup). */
+function syncFlatBtn() { syncSettingsState(); }
 document.addEventListener("click", (ev) => {
   if (!ev.target.closest(".filterWrap")) $("filterMenu").classList.remove("show");
   if (!ev.target.closest(".wd-filterWrap")) {
@@ -4048,14 +4294,23 @@ document.addEventListener("click", (ev) => {
 });
 
 /* ===================== events ===================== */
+/* Busy state for an icon-only button. `textContent = "拉取中…"` used to carry the
+ * in-flight signal; that is no longer available because the button's only child
+ * is now an <svg> and assigning textContent would delete it. The rotation of the
+ * glyph plus `aria-busy` carries the same information without the text. */
+function setBusy(btn, busy, label) {
+  btn.classList.toggle("busy", busy);
+  btn.disabled = busy;
+  btn.setAttribute("aria-busy", busy ? "true" : "false");
+  if (label) btn.title = label;
+}
 $("btnRefresh").addEventListener("click", load);
 
 /** Fetch remote refs (git fetch --all --prune), then refresh graph + branches. */
 $("btnFetch").addEventListener("click", async () => {
   const b = $("btnFetch");
-  b.disabled = true;
-  const orig = b.textContent;
-  b.textContent = "拉取中…";
+  const idle = b.title;
+  setBusy(b, true, "拉取中…");
   try {
     const res = await api("gitop", { action: "fetch" });
     if (!res.ok) { alert("拉取失败: " + (res.error || "?")); return; }
@@ -4064,8 +4319,7 @@ $("btnFetch").addEventListener("click", async () => {
   } catch (err) {
     alert("拉取失败: " + err.message);
   } finally {
-    b.disabled = false;
-    b.textContent = orig;
+    setBusy(b, false, idle);
   }
 });
 
@@ -4080,9 +4334,8 @@ $("btnPush").addEventListener("click", async () => {
   );
   if (!ok) return;
   const b = $("btnPush");
-  b.disabled = true;
-  const orig = b.textContent;
-  b.textContent = "推送中…";
+  const idle = b.title;
+  setBusy(b, true, "推送中…");
   try {
     const res = await api("gitop", { action: "push", branch });
     if (!res.ok) { alert("推送失败: " + (res.error || "?")); return; }
@@ -4090,8 +4343,7 @@ $("btnPush").addEventListener("click", async () => {
   } catch (err) {
     alert("推送失败: " + err.message);
   } finally {
-    b.disabled = false;
-    b.textContent = orig;
+    setBusy(b, false, idle);
   }
 });
 $("repoSwitch").addEventListener("change", (ev) => {
@@ -4125,9 +4377,13 @@ async function checkForUpdate(silent) {
       return;
     }
     if (res.hasUpdate && res.latest) {
+      // The badge used to grow to "🔄 新版本 vX.Y", which re-widened the right
+      // group and shifted the centred filters every time a release landed.
+      // An accent tint plus the version in the tooltip keeps the width fixed.
       btn.style.display = "";
-      btn.textContent = "🔄 新版本 " + res.latest;
+      btn.classList.add("has-upd");
       btn.title = "发现新版本 " + res.latest + "（当前 " + (res.current || "?") + "），点击一键更新";
+      btn.setAttribute("aria-label", "发现新版本 " + res.latest + "，点击更新");
     } else if (!silent) {
       btn.style.display = "none";
       alert("已是最新版本（" + (res.current || "?") + "）");
@@ -4146,9 +4402,8 @@ $("btnUpdate").addEventListener("click", async () => {
   );
   if (!ok) return;
   const btn = $("btnUpdate");
-  btn.disabled = true;
-  const orig = btn.textContent;
-  btn.textContent = "更新中…";
+  const idle = btn.title;
+  setBusy(btn, true, "更新中…");
   try {
     const res = await api("autoupdate", { tag: UPDATE_STATE.latest });
     if (!res.ok) { alert("更新失败: " + (res.error || "?")); return; }
@@ -4157,8 +4412,7 @@ $("btnUpdate").addEventListener("click", async () => {
   } catch (err) {
     alert("更新失败: " + err.message);
   } finally {
-    btn.disabled = false;
-    btn.textContent = orig;
+    setBusy(btn, false, idle);
   }
 });
 
@@ -4692,6 +4946,7 @@ function kbdVisibleList() {
 window.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape") {
     if ($("pickdirDlg").classList.contains("show")) { $("pdClose").click(); return; }
+    if ($("settingsDlg").classList.contains("show")) { toggleSettings(false); return; }
     if ($("shortcutDlg").classList.contains("show")) { toggleShortcutDlg(false); return; }
     if ($("ggDlg").classList.contains("show")) { $("ggDlgCancel").click(); return; }
     if ($("commitDlg").classList.contains("show")) { $("commitDlgCancel").click(); return; }
@@ -4701,9 +4956,20 @@ window.addEventListener("keydown", (ev) => {
     if ($("detail").classList.contains("open")) { $("dClose").click(); return; }
   }
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(ev.target && ev.target.tagName || "");
+  // Ctrl+/ stays live inside a modal — it is the documented way to toggle the
+  // shortcut panel, and that panel IS a modal.
+  if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && ev.key === "/") {
+    ev.preventDefault();
+    toggleSettings(false);
+    toggleShortcutDlg();
+    return;
+  }
+  // A modal owns the keyboard: without this, ↑/↓ would scroll the commit list
+  // and open commit details behind the settings dialog while the user is only
+  // trying to reach its buttons.
+  if ($("settingsDlg").classList.contains("show") || $("shortcutDlg").classList.contains("show")) return;
   // Ctrl+ shortcuts (global; not while typing in an input)
   if ((ev.ctrlKey || ev.metaKey) && !ev.altKey) {
-    if (ev.key === "/") { ev.preventDefault(); toggleShortcutDlg(); return; }
     if (!typing) {
       if (ev.key === "f" || ev.key === "F") {
         ev.preventDefault();

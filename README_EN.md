@@ -21,9 +21,9 @@ View, browse and manage git repositories right inside the harness conversation �
 ## ✨ Features
 
 - **Commit history graph**: GitHub-style commit list with foldable per-branch groups and branch coloring (local and remote branches each get their own group)
-- **Lane graph (shown only in flat mode)**: click 「▤ 平铺」 to enter the continuous-timeline view, where the left gutter draws real branch lanes using the same "reserved point" layout as VS Code Git Graph, so forks and merges curve correctly. **The default per-branch grouped view shows no lane graph** — group headers would break the lanes, so it is cleaner not to draw them
+- **Lane graph (shown only in flat mode)**: switch to "Flat" (平铺) in the ⚙ Settings dialog at the far right of the top bar to enter the continuous-timeline view, where the left gutter draws real branch lanes using the same "reserved point" layout as VS Code Git Graph, so forks and merges curve correctly. **The default per-branch grouped view shows no lane graph** — group headers would break the lanes, so it is cleaner not to draw them
 - **Follows the current session (workspace auto-detection)**: automatically resolves the current session's working directory and shows its git repository; **switching the working copy switches the graph to that repo automatically (v0.20)** — no manual refresh needed when changing sessions or workspaces. The "last picked repo" memory is kept per workspace, so it neither bleeds across workspaces nor makes the graph ignore a switch. Non-git workspaces show an empty state with a 「🖥 Find git repos in the current session directory」 button that shallow-scans the workspace and its subdirectories
-- **📂 Open folder (v0.11)**: not limited to the current session workspace — click "Open" in the top bar (or "Open folder" in the empty state) to browse the disk (drives → folders, with git markers), pick any folder (e.g. a repo B in another workspace) and view its version control; added repos persist, switch via the top dropdown any time, and they survive a page refresh
+- **📂 Open folder (v0.11)**: not limited to the current session workspace — click the folder icon at the right of the top bar (tooltip: "打开文件夹"), or "Open folder" in the empty state, to browse the disk (drives → folders, with git markers), pick any folder (e.g. a repo B in another workspace) and view its version control; added repos persist, switch via the top dropdown any time, and they survive a page refresh
 - **Branch filtering**: checked = visible, unchecked = fully hidden (empty selection shows an empty list)
 - **Commit details**: commit message, changed files, per-file diffs, compare two commits (Ctrl+click), 📜 file history (every commit touching a file); the detail panel is **resizable** — drag the splitter, double-click it to reset, and the width is remembered
 - **Uncommitted changes (VSCode-style, persistent at the top of the graph)**: grouped file lists (Staged / Changes / Untracked), status badges (A/M/D/R/U/?), per-file +/− line counts, click-to-expand per-file diff (syntax highlighted), renames `old → new`, untracked file contents; the ☑ groups toggle hides any group, and both the panel and each group fold on click; **per-row stage/unstage/restore, top-bar stage-all/commit, checkboxes for batch actions (stage/unstage/restore/ignore/commit selected)** (destructive actions ask for confirmation first); the commit dialog can **✨ AI-generate a commit message** (heuristic candidates from the diff, editable)
@@ -31,6 +31,8 @@ View, browse and manage git repositories right inside the harness conversation �
 - **Remote/branch operations**: top-bar `⬇ Fetch` (git fetch) and `⬆ Push` (git push current branch, confirmed first); branch-group right-click — local branches: 🔄 switch / ⬆ push / 🗑️ delete (merged-only, HEAD protected), remote branches: ⬇ fetch / copy remote branch name
 - **Remote branches always visible**: remote group headers render even when fully synced with a local branch, labelled 「已同步」(synced) or 「已包含」(contained)
 - **Auto-update (degrades by mount type)**: on normal installs it silently checks the latest GitHub tag when the graph opens; when a newer version exists the top bar shows 「🔄 新版本 vX.Y」— one click downloads and swaps the plugin files (old files are backed up, failures roll back automatically), then a restart applies it. When the plugin is mounted from a git checkout (`link:`), the update button hides automatically and the UI suggests `git pull` instead — files owned by git are never overwritten
+- **Top bar layout (v0.25)**: title + repo switcher on the left; **branch filter → date → search** in the centre, centred on the bar itself (not on the leftover space, so growing side groups cannot shift them); four icon buttons (open folder / fetch / push / refresh) on the right, then a hairline, then **⚙ Settings** at the far right. Icon buttons are glyph-only; the name lives in the tooltip and `aria-label`.
+- **⚙ Settings (second-level page, v0.25)**: the gear opens a dialog holding the two set-once choices — **view** (grouped / flat) and **theme** — plus a shortcut-panel entry. The top bar no longer carries "Flat" and "Theme" buttons; themes render as a grid of colour chips with the current one highlighted, and the gear shows a small dot whenever a choice is away from its default.
 - **State memory**: branch filter, group toggles, fold states and theme. **Since v0.22 these are stored on disk** (`.state/prefs.json` next to the plugin), so they survive a DSH restart or port change — localStorage is origin-scoped and used to reset silently when the port moved (keys unified to `gg2-*` since v0.8; branch groups are expanded by default on first open)
 - **Multi-repo switching**: a dropdown at the top of the graph page switches between repos
 - **Large-repo support**: the first screen loads 50 commits; scrolling down pulls 100 more per step (only when you reach the bottom, never pre-fetching everything). Commit details, per-file diffs and file history are cached in memory, so re-opening one costs no request
@@ -101,7 +103,7 @@ Declared in `package.json`: both `engines.dsh` and `peerDependencies["@deepseek-
 | Action | Description |
 | --- | --- |
 | "Git 图谱" tab in a session | Open the graph for the current session's workspace |
-| 📂 Open / empty-state "Open folder" | Browse the disk and pick any git repo (e.g. folder B in another workspace); it is added and its graph is shown (v0.11) |
+| 📂 Open folder (top-bar icon / empty-state button) | Browse the disk and pick any git repo (e.g. folder B in another workspace); it is added and its graph is shown (v0.11) |
 | Repo dropdown at the top | Switch repositories - the repo label to its left shows the full path |
 | Branch group header | Click to fold / unfold that branch |
 | ☑ Branch filter | Checked = visible, unchecked = fully hidden |
@@ -110,7 +112,9 @@ Declared in `package.json`: both `engines.dsh` and `peerDependencies["@deepseek-
 | Splitter left of the detail panel | Drag horizontally to resize the panel; double-click to reset (width is remembered, min 260px) |
 | Right-click a commit row | Copy / details / tag / create branch from commit / open GitHub commit page / copy repo path / open in file manager |
 | "未提交改动" status line | Click to scroll to the top changes block |
-| ↻ Refresh | Reload repository data |
+| ↻ Refresh (top-bar icon) | Reload repository data |
+| ⬇ Fetch / ⬆ Push (top-bar icons) | git fetch / git push the current branch (push asks first) |
+| ⚙ Settings (far right) | Second-level page: view (grouped / flat), theme (11 options), shortcut entry |
 
 ## 🛠️ Development
 
