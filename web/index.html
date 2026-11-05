@@ -4704,19 +4704,22 @@ window.addEventListener("keydown", (ev) => {
   if (ev.target === $("searchBox")) return;
   const list = kbdVisibleList();
   if (!list.length) return;
+  // Arrow keys move AND open the commit in one step. A cursor that only moved a
+  // dashed outline forced a pointless Enter — in a history browser the thing you
+  // are stepping through is the detail, not a selection to be confirmed.
+  // selectCommit() re-renders and handles scrolling, so the old render() calls
+  // here would only paint twice.
   if (ev.key === "ArrowDown" || ev.key === "j") {
     ev.preventDefault();
     KEY_IDX = Math.min(list.length - 1, KEY_IDX < 0 ? 0 : KEY_IDX + 1);
-    const c = list[KEY_IDX];
-    render();
-    scrollToNode(c);
+    selectCommit(list[KEY_IDX], true);
   } else if (ev.key === "ArrowUp" || ev.key === "k") {
     ev.preventDefault();
     KEY_IDX = KEY_IDX < 0 ? 0 : Math.max(0, KEY_IDX - 1);
-    const c = list[KEY_IDX];
-    render();
-    scrollToNode(c);
+    selectCommit(list[KEY_IDX], true);
   } else if (ev.key === "Enter") {
+    // Kept as a no-op confirmation of the current row: harmless, and some people
+    // still press it out of habit after arriving with the mouse.
     if (KEY_IDX >= 0 && KEY_IDX < list.length) {
       ev.preventDefault();
       selectCommit(list[KEY_IDX]);
