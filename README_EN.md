@@ -143,3 +143,4 @@ Release flow: `npm run check:compat` (official window coverage) → `pwsh -File 
 ## 🙏 Acknowledgements
 
 - [DeepSeek Harness](https://github.com/deepseek-ai/) — the plugin platform
+- [quansheng](https://github.com/1841220388zzzcccxxx-star) — original author of this project; every line of code and documentation before v0.22.0 is his work. This repository is a fork of his [dsh-git-graph](https://github.com/1841220388zzzcccxxx-star/dsh-git-graph)

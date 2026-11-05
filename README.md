@@ -143,3 +143,4 @@ node --check index.js client.js   # 语法检查（web/index.html 内联脚本�
 ## 🙏 致谢
 
 - [DeepSeek Harness](https://github.com/deepseek-ai/) —— 插件运行平台
+- [quansheng](https://github.com/1841220388zzzcccxxx-star) —— 本项目原作者，v0.22.0 之前的全部代码与文档均由他完成；本仓库是他的 [dsh-git-graph](https://github.com/1841220388zzzcccxxx-star/dsh-git-graph) 的 fork
