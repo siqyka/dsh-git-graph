@@ -386,7 +386,15 @@
   /* --- commit list (GitHub-style) --- */
   /* transparent: the themed background + #ggDeco ambient layer show through */
   #graphWrap { flex: 1; overflow: auto; position: relative; }
-  #commitList { padding: 10px 0 24px; min-width: 520px; position: relative; }
+  /* The left/right inset must match #wdPanel's 12px margin, otherwise the branch
+     cards below sit 12px wider on each side than the uncommitted-changes panel
+     above them and the two columns look misaligned. Kept in a variable because
+     the lane SVG has to compensate for the same amount (see #laneSvg). */
+  #commitList {
+    --gg-list-pad-x: 12px;
+    padding: 10px var(--gg-list-pad-x) 24px;
+    min-width: 520px; position: relative;
+  }
   .cl-row {
     display: flex; align-items: stretch;
     padding: 0; cursor: pointer; position: relative;
@@ -401,7 +409,11 @@
      so `cl-graph` is just a spacer that reserves the horizontal room. */
   .cl-graph { flex: none; position: relative; }
   #laneSvg {
-    position: absolute; left: 0; top: 0;
+    /* Absolute positioning resolves against the padding box, i.e. the OUTER edge
+       of #commitList's padding. The rows live inside that padding, so without
+       this offset the lanes would sit 12px to the left of their own rows.
+       Shared variable so the two can never drift apart. */
+    position: absolute; left: var(--gg-list-pad-x); top: 0;
     pointer-events: none; z-index: 1; overflow: visible;
   }
   #laneSvg .lane-line { fill: none; stroke-width: 2.4; stroke-linecap: round; }
