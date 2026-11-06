@@ -195,3 +195,9 @@ dsh-git-graph 是 DeepSeek Harness (DSH) Web GUI 的嵌入式 Git 仓库图谱�
   - 或 PowerShell 7+：`Set-Content -Encoding utf8NoBOM`
   - 写完必须校验：读回字节前 3 字节 ≠ `EF BB BF`
 - **挂载与兼容（v0.14 起）**：profile 以 `dsh plugin add link:` 直挂本仓库（单一真源，旧的 `.dsh/plugins/git-graph` 副本 + `sync-deploy.ps1` 双轨已退役）。兼容声明用官方字段：`engines.dsh` + `peerDependencies["@deepseek-ai/dsh"]`（DSH ≥0.2.0 在 add preflight 与 profile 组合时**强制校验**，不满足直接拒绝）+ `dsh.manifestVersion: 1`；`peerDependenciesMeta` 必须标 optional（防 npm/pnpm 自动安装 peer 本体）。改兼容范围必须先跑锚点版本隔离实测（证据记入 docs/compatibility.md）
+- **包名必须 scoped，且三处逐字相同（v0.26.1，改这块前必读）**：npm 上不带 scope 的 `dsh-git-graph` 属于另一个项目（enoughpower/dsh-git-graph），本插件无法沿用，因此包名是 `@shiqyka/dsh-git-graph`。以下**三处必须逐字一致**，`npm run publish:npm` 会在发布前比对并在不一致时中止：
+  - `package.json` 的 `name`
+  - `client.js` 里 `window.__ModuleLoader__.load({ id })` —— 客户端加载器按**包名**去核对模块注册的 id，不同则标签页**静默消失**（不报错、不打日志）
+  - `cordis.patch.yml` 里 insert 行的 `name` —— 组合层用它做 `require.resolve` 再读 `dsh.client` 才带起浏览器半；裸名在这里解析不到任何东西，行不挂载
+  - 附带一条：`client.js` 注入样式标签的 `dataset.plugin` 也必须等于包名。核心的 `claimStyles()` 用 `style[data-plugin="<入口 id>"]` 认领样式，写裸名会让这个标签在插件卸载 / HMR 后**留在页面上**。
+  - 根因（实测）：`exactPackageSpecifier()` 只接受裸包名或 `@scope/name` 两种形状，随后走 Node 解析；profile 的 `node_modules` 里有什么名字就只能解析到什么名字。所以改名必须同时动 profile 的依赖键与 `dsh.profile.bundles` —— 已装的旧 profile 改完会**静默跳过该 bundle**（`skippedBundles`），表现为「插件不见了」，需重新 `dsh plugin add`。

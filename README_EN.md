@@ -18,8 +18,8 @@
 # From GitHub
 dsh plugin --profile web add github:siqyka/dsh-git-graph
 
-# Or from npm (scoped package, see "Distribution")
-dsh plugin --profile web add @<scope>/dsh-git-graph
+# Or from npm
+dsh plugin --profile web add @shiqyka/dsh-git-graph
 ```
 
 **Restart `dsh web`** afterwards, open the address it prints, then pick the **Git 图谱** tab in any session (next to the trajectory tab).
@@ -33,7 +33,7 @@ dsh plugin --profile web add @<scope>/dsh-git-graph
 ```yaml
 - insert:
     - id: git-graph
-      name: dsh-git-graph
+      name: '@shiqyka/dsh-git-graph'
       config:
         repo: "C:/path/to/your/repo"   # or repos: [ ... ]
 ```
@@ -115,7 +115,7 @@ node --check index.js client.js && node --check web/app.js
 # index.js / client.js changes need a dsh web restart; the three web/ files only need a refresh
 ```
 
-Release flow: `npm run check:compat` → `pwsh -File scripts/compat-isolated-test.ps1` (isolated tests on anchor versions) → bump version → `git commit` → `git tag vX.Y` → `npm run publish:npm` (after scoping the name). Full conventions live in [AGENTS.md](AGENTS.md).
+Release flow: `npm run check:compat` → `pwsh -File scripts/compat-isolated-test.ps1` (isolated tests on anchor versions) → bump version → `git commit` → `git tag vX.Y` → `git push --follow-tags` → `npm run publish:npm`. Full conventions live in [AGENTS.md](AGENTS.md).
 
 ## Compatibility & security
 
@@ -127,7 +127,8 @@ Release flow: `npm run check:compat` → `pwsh -File scripts/compat-isolated-tes
 ## Distribution
 
 - **GitHub**: this repository carries the `dsh-plugin` topic, so `dsh plugin add github:…` installs directly.
-- **npm**: `@<scope>/dsh-git-graph` (published under the scope from `npm whoami`).
+- **npm**: [`@shiqyka/dsh-git-graph`](https://www.npmjs.com/package/@shiqyka/dsh-git-graph).
+  The scope is mandatory: the unscoped `dsh-git-graph` name belongs to a different project on npm.
 
 ## License
 

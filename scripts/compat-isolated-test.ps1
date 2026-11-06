@@ -13,16 +13,22 @@ $ErrorActionPreference = 'Continue'
 $base = Join-Path $env:TEMP 'dsh-compat-v0140'
 Remove-Item $base -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $base -ItemType Directory -Force | Out-Null
-if (-not $PluginSrc) { $PluginSrc = 'D:\桌面\Agent操作文件夹\Git图谱插件_deepseek harness' }
 $log = Join-Path $base 'run.log'
 
 # 1) 复制插件源码（仅仓库文件，排除 .git/.reasonix）到 ASCII 路径
+# 默认取本脚本的上级目录（= 仓库根），不再写死某台机器的绝对路径。
+if (-not $PluginSrc) { $PluginSrc = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path }
+if (-not (Test-Path (Join-Path $PluginSrc 'package.json'))) {
+  Add-Content $log "ABORT: -PluginSrc 不是插件目录（缺 package.json）: $PluginSrc"
+  Write-Output "ABORT: -PluginSrc 不是插件目录（缺 package.json）: $PluginSrc"
+  exit 9
+}
 $plugin = Join-Path $base 'plugin-src'
 New-Item $plugin -ItemType Directory -Force | Out-Null
-Get-ChildItem $pluginSrc -Force | Where-Object { $_.Name -notin @('.git', '.reasonix') } | ForEach-Object {
+Get-ChildItem $PluginSrc -Force | Where-Object { $_.Name -notin @('.git', '.reasonix') } | ForEach-Object {
   Copy-Item $_.FullName $plugin -Recurse -Force
 }
-Add-Content $log "plugin staged at: $plugin"
+Add-Content $log "plugin staged at: $plugin (from $PluginSrc)"
 
 function Test-Version([string]$ver) {
   $work = Join-Path $base "work-$ver"
@@ -46,7 +52,7 @@ function Test-Version([string]$ver) {
   $hasPlugin = if ($dump -match 'git-graph') { 'yes' } else { 'NO' }
   Add-Content $log "dump exit: $LASTEXITCODE  contains git-graph: $hasPlugin"
   Add-Content $log "-- plugin remove --"
-  node $bin plugin --profile web remove dsh-git-graph 2>&1 | Select-Object -Last 4 | Add-Content $log
+  node $bin plugin --profile web remove '@shiqyka/dsh-git-graph' 2>&1 | Select-Object -Last 4 | Add-Content $log
   Add-Content $log "remove exit: $LASTEXITCODE"
   $dump2 = node $bin --profile web --dump-config 2>&1 | Out-String
   $left = if ($dump2 -match 'git-graph') { 'still-present' } else { 'cleaned' }

@@ -28,10 +28,16 @@ const OFFICIAL_REGISTRY = 'https://registry.npmjs.org/'
 const checkOnly = process.argv.includes('--check-only')
 
 function run(cmd, args, opts = {}) {
-  const r = spawnSync(cmd, args, { cwd: root, stdio: opts.capture ? 'pipe' : 'inherit', shell: false, encoding: 'utf8' })
+  /* Windows ships npm as npm.cmd, and Node refuses to spawn .cmd/.bat directly
+   * (spawn EINVAL since the 2024 command-injection fix). That surfaced as
+   * `npm pack --dry-run failed (exit null)` — a null status, not a real
+   * failure — so the check chain never reached the publish step. Route npm
+   * through the shell on Windows; every npm argument here is a plain flag. */
+  const useShell = process.platform === 'win32' && /^npm(\.cmd)?$/i.test(cmd)
+  const r = spawnSync(cmd, args, { cwd: root, stdio: opts.capture ? 'pipe' : 'inherit', shell: useShell, encoding: 'utf8' })
   if (r.status !== 0) {
     if (opts.capture) console.error(r.stdout, r.stderr)
-    throw new Error(`${cmd} ${args.join(' ')} failed (exit ${r.status})`)
+    throw new Error(`${cmd} ${args.join(' ')} failed (exit ${r.status})${r.error ? `: ${r.error.message}` : ''}`)
   }
   return r
 }
@@ -43,7 +49,7 @@ function fail(msg) {
 
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 
-/* 1) scoped 包名闸门 */
+/* 1) 包名闸门：必须 scoped，且三处标识必须完全一致 */
 if (!pkg.name.startsWith('@')) {
   fail([
     '包名未 scoped。npm 上 `dsh-git-graph` 已被无关插件（enoughpower/dsh-git-graph）占用，',
@@ -54,6 +60,28 @@ if (!pkg.name.startsWith('@')) {
     '  d) README.md / README_EN.md 安装命令中的包名',
     '先 npm login 后用 `npm whoami` 确认 scope，再重跑本脚本。',
   ].join('\n'))
+}
+{
+  /* 三处必须逐字一致：客户端加载器用包名去找 `__ModuleLoader__.load` 注册的 id，
+   * 组合层用行 name 做 require.resolve 再读 `dsh.client`。任一处不同 —— 安装不报错，
+   * 但标签页静默消失。发布后才发现代价太高，所以在发布前逐字比对。 */
+  const clientSrc = readFileSync(join(root, 'client.js'), 'utf8')
+  const clientId = /__ModuleLoader__\.load\(\s*\{[\s\S]*?\bid:\s*["']([^"']+)["']/.exec(clientSrc)?.[1]
+  const patchRow = /^[ \t]*name:[ \t]*['"]?([^'"\n]+?)['"]?[ \t]*$/m.exec(
+    readFileSync(join(root, 'cordis.patch.yml'), 'utf8'),
+  )?.[1]
+  const mismatched = [
+    ['client.js 的 __ModuleLoader__.load id', clientId],
+    ['cordis.patch.yml 的 insert 行 name', patchRow],
+  ].filter(([, value]) => value !== pkg.name)
+  if (mismatched.length) {
+    fail([
+      `package.json name = ${pkg.name}，以下位置不一致：`,
+      ...mismatched.map(([where, value]) => `  ${where} = ${value ?? '(未找到)'}`),
+      '这三处必须逐字相同，否则插件装上后标签页静默消失。',
+    ].join('\n'))
+  }
+  console.log(`[publish] 包名一致：${pkg.name}（package.json / client.js id / patch 行 name）`)
 }
 
 /* 2) 语法检查 */

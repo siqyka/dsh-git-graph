@@ -10,6 +10,12 @@
 #     # repos:                            # 或多个仓库
 #     #   - "C:/path/to/repo-a"
 #     #   - "C:/path/to/repo-b"
+#
+# `name` MUST be the full npm package name (scoped). The loader resolves the row
+# through Node (`exactPackageSpecifier` + require.resolve) to locate the package
+# manifest, and only then reads `dsh.client` to bring in the browser half. A bare
+# "dsh-git-graph" resolves to nothing here — the published package is scoped — so
+# the row never mounts and the tab silently never appears.
 - insert:
     - id: git-graph
-      name: dsh-git-graph
+      name: '@shiqyka/dsh-git-graph'

@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-	id: "dsh-git-graph",
+	id: "@shiqyka/dsh-git-graph",
 	factory: (require) => {
 		var module = { exports: {} };
 		var exports = module.exports;
@@ -15,10 +15,14 @@ window.__ModuleLoader__.load({
 			".gg-view{height:100%;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base, #0d1117)}",
 			".gg-view .gg-frame{flex:1}"
 		].join("");
-		const tagId = "dsh-git-graph/style";
+		/* Style ownership keys off the module id: core's claimStyles() looks up
+		 * `style[data-plugin="<entry id>"]`, so both the id and the lookup key must
+		 * be the full package name — a bare "dsh-git-graph" would leave this tag
+		 * unclaimed and it would survive plugin unload / HMR. */
+		const tagId = "@shiqyka/dsh-git-graph/style";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
-			tag.dataset.plugin = "dsh-git-graph";
+			tag.dataset.plugin = "@shiqyka/dsh-git-graph";
 			tag.dataset.pluginCss = tagId;
 			tag.textContent = css;
 			document.head.appendChild(tag);

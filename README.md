@@ -18,8 +18,8 @@
 # 从 GitHub
 dsh plugin --profile web add github:siqyka/dsh-git-graph
 
-# 或从 npm（scope 包名，见「发布渠道」）
-dsh plugin --profile web add @<scope>/dsh-git-graph
+# 或从 npm
+dsh plugin --profile web add @shiqyka/dsh-git-graph
 ```
 
 装完**重启 `dsh web`**，回到浏览器打开 dsh web 输出的地址，在任意会话页点「Git 图谱」标签（在「轨迹」旁边）即可查看。
@@ -33,7 +33,7 @@ dsh plugin --profile web add @<scope>/dsh-git-graph
 ```yaml
 - insert:
     - id: git-graph
-      name: dsh-git-graph
+      name: '@shiqyka/dsh-git-graph'
       config:
         repo: "C:/path/to/your/repo"   # 或 repos: [ ... ] 数组
 ```
@@ -115,7 +115,7 @@ node --check index.js client.js && node --check web/app.js
 # index.js / client.js 改动需重启 dsh web；web/ 下三个文件刷新即生效
 ```
 
-发版流程：`npm run check:compat` → `pwsh -File scripts/compat-isolated-test.ps1`（锚点版本隔离实测）→ 版本号 +1 → `git commit` → `git tag vX.Y` → `npm run publish:npm`（scope 改名后）。完整约定见 [AGENTS.md](AGENTS.md)。
+发版流程：`npm run check:compat` → `pwsh -File scripts/compat-isolated-test.ps1`（锚点版本隔离实测）→ 版本号 +1 → `git commit` → `git tag vX.Y` → `git push --follow-tags` → `npm run publish:npm`。完整约定见 [AGENTS.md](AGENTS.md)。
 
 ## 兼容与安全
 
@@ -127,7 +127,8 @@ node --check index.js client.js && node --check web/app.js
 ## 发布渠道
 
 - **GitHub**：本仓库带 `dsh-plugin` topic，`dsh plugin add github:…` 直装。
-- **npm**：`@<scope>/dsh-git-graph`（以 `npm whoami` 得到的 scope 发布）。
+- **npm**：[`@shiqyka/dsh-git-graph`](https://www.npmjs.com/package/@shiqyka/dsh-git-graph)。
+  包名必须带 scope：npm 上不带 scope 的 `dsh-git-graph` 属于另一个项目，本插件无法沿用。
 
 ## 开源协议
 
