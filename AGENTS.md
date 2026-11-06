@@ -173,6 +173,17 @@ dsh-git-graph 是 DeepSeek Harness (DSH) Web GUI 的嵌入式 Git 仓库图谱�
   - **滚动条用 `--text3` 而非 `--bg4`**：深色主题 `--bg4`(#222b37) 与面板底 `--bg3`(#1a212b) 几乎同色，thumb 等于隐形；而 `#wdPanel .wd-body` 正是新加的那个常驻滚动区。用 `color-mix(in srgb, var(--text3) 45%, transparent)` 保证 11 套主题下都可见，并给该区域加 `scrollbar-width: thin`。（`opacity` 对 `::-webkit-scrollbar-thumb` 无效，别用。）
 - **解析细节**：`porcelain -z` 重命名两条记录（`XY <新路径>` + `<旧路径>`）；`numstat -z` 重命名为 `n\tn` + 旧路径 + 新路径；Windows 路径先 `replace(/\\/g,'/')` 再比较
 
+## 生命周期约定（v0.26.2，改 apply() 前必读）
+
+**apply() 里装的任何东西都必须交出清理函数**，否则宿主卸载插件后资源留在原地，再次挂载就会撞车。这个项目已经真实踩过一次（面板报的是 `webserver: duplicate prefix route "/git-graph"`）：
+
+- `ctx.webServer.register(...)` 的返回值是一个 disposer。直接调用它而**不交给框架**，插件卸载（plugin-manager 热重载、配置更新、禁用再启用、HMR）时 fiber 没有可执行的清理，`/git-graph` 前缀路由仍留在 webServer 的路由表里；下一次挂载再注册同一路径，webServer 的重复守卫直接抛错 —— **插件再也装不回来**。
+- 正确写法是把它包进 `ctx.effect`：`ctx.effect(() => ctx.webServer.register({ ... }), 标签)`。effect 体返回的 disposer 会被 fiber 收集，卸载时按注册逆序执行。
+- 同类资源同理：定时器、事件监听、在别的服务上注册的行，都用 `ctx.effect` 返回清理函数。本项目的兄弟插件 `@shiqyka/dsh-ssh-workspace` 就是这个形状：把 `routes.map((r) => webServer.register(r))` 的结果收进一个数组，再 `return () => { for (const d of disposers) d() }`。
+- **注意 `return disposer` 不算数**：`apply()` 的返回值在这条链路上没有被收集（实测：让 apply 返回注册得到的同一个 disposer，卸载后路由仍在表里）。必须走 `ctx.effect`。
+
+回归防线：`node scripts/check-lifecycle.mjs` 用一个最小 fake host（只实现 `ctx.effect` 与 `ctx.webServer.register`）断言「挂载 → 卸载 → 能再挂载」，已接进 `npm run publish:npm` 的检查链（第 2b 步），旧写法会让发布在语法检查之后立刻中止。**不要为了让发布通过而放宽这个检查** —— 它挡住的正是「插件装上后卸不掉、再也装不回来」这个真实故障。
+
 ## 开发与验证流程
 
 1. 修改源码（`index.js` / `client.js` / `web/index.html` / `web/app.css` / `web/app.js`）

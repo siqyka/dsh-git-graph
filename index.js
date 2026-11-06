@@ -580,7 +580,7 @@ export function apply(ctx, config = {}) {
   }
   const addRecent = (p) => { recentRepos.add(p); recentKeys.add(normKey(p)) }
 
-  ctx.webServer.register({
+  ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: '/git-graph',
     handler: async (req, res) => {
@@ -1541,5 +1541,5 @@ export function apply(ctx, config = {}) {
         }
       }
     },
-  })
+  }), 'git-graph: /git-graph route')
 }

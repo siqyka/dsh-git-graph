@@ -114,6 +114,9 @@ run(process.execPath, ['--check', join('web', 'app.js')])
   }
 }
 
+/* 2b) 生命周期检查：apply() 装的路由必须能被卸载（防 duplicate prefix route 复发） */
+run(process.execPath, ['scripts/check-lifecycle.mjs'])
+
 /* 3) 兼容窗口覆盖检查 */
 run(process.execPath, ['scripts/check-compat.mjs'])
 
