@@ -59,20 +59,30 @@ if (!pkg.name.startsWith('@')) {
 /* 2) 语法检查 */
 run(process.execPath, ['--check', 'index.js'])
 run(process.execPath, ['--check', 'client.js'])
+/* The page is three files now: index.html + app.css + app.js. Check the script
+ * directly, and assert the HTML actually references both assets — a release
+ * that forgets to ship them would publish a blank page. */
+run(process.execPath, ['--check', join('web', 'app.js')])
 {
   const html = readFileSync(join(root, 'web', 'index.html'), 'utf8')
-  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-  if (scripts.length === 0) fail('web/index.html 中没有找到内联 <script>')
-  const tmp = mkdtempSync(join(tmpdir(), 'gg-publish-'))
-  try {
-    scripts.forEach((m, i) => {
-      const f = join(tmp, `inline-${i}.mjs`)
-      writeFileSync(f, m[1])
-      run(process.execPath, ['--check', f])
-    })
-    console.log(`[publish] 语法检查通过：index.js、client.js、内联脚本 ×${scripts.length}`)
-  } finally {
-    rmSync(tmp, { recursive: true, force: true })
+  if (!html.includes('href="app.css"')) fail('web/index.html 未引用 app.css')
+  if (!html.includes('src="app.js"')) fail('web/index.html 未引用 app.js')
+  const inline = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+  if (inline.length === 0) {
+    console.log('[publish] 语法检查通过：index.js、client.js、web/app.js（页面无内联脚本）')
+  } else {
+    // Legacy layout: keep checking whatever inline blocks are still there.
+    const tmp = mkdtempSync(join(tmpdir(), 'gg-publish-'))
+    try {
+      inline.forEach((m, i) => {
+        const f = join(tmp, `inline-${i}.mjs`)
+        writeFileSync(f, m[1])
+        run(process.execPath, ['--check', f])
+      })
+      console.log(`[publish] 语法检查通过：index.js、client.js、web/app.js、内联脚本 ×${inline.length}`)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
   }
 }
 

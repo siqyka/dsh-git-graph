@@ -16,6 +16,24 @@ const webRoot = join(here, 'web')
 const MAX_GIT_BUFFER = 32 * 1024 * 1024
 const MAX_DIFF_CHARS = 240000
 
+/* Content-Security-Policy for the graph page and its two static assets.
+ * The page used to be a single HTML file with everything inline, which forced
+ * 'unsafe-inline' for both scripts and styles. Now that app.js and app.css are
+ * separate files, 'self' suffices for each and the page needs no inline
+ * allowances at all. Everything else stays locked down: no network origins
+ * except this host, no frames, no plugins.
+ * `img-src data: blob:` is still required — the UI builds small inline SVG/data
+ * images, and the decorative background uses blob-free generated nodes. */
+const PAGE_CSP = [
+  "default-src 'none'",
+  "script-src 'self'",
+  "style-src 'self'",
+  'img-src data: blob:',
+  "connect-src 'self'",
+  "font-src 'self'",
+  "frame-ancestors 'self'",
+].join('; ')
+
 /* ---- persisted UI preferences ------------------------------------------------
  * localStorage is scoped to the page's origin, and the DSH web port changes
  * between launches (e.g. 10426 -> 5828), which silently wiped every saved
@@ -354,6 +372,10 @@ async function applyUpdate(tag) {
     await runGit(here, [...await gitNetArgs(), 'clone', '--depth', '1', '--branch', tag, UPDATE_GH, srcDir], MAX_GIT_BUFFER, 180000)
     if (!statSync(join(srcDir, 'index.js'), { throwIfNoEntry: false })) throw new Error('missing-index')
     if (!statSync(join(srcDir, 'web', 'index.html'), { throwIfNoEntry: false })) throw new Error('missing-web')
+    // The page pulls these two in; a release that ships index.html without them
+    // would swap in a blank screen, so refuse before touching the install.
+    if (!statSync(join(srcDir, 'web', 'app.css'), { throwIfNoEntry: false })) throw new Error('missing-web-css')
+    if (!statSync(join(srcDir, 'web', 'app.js'), { throwIfNoEntry: false })) throw new Error('missing-web-js')
 
     // backup the current install, then swap (skip the cloned .git dir).
     // The backup lives next to the plugin dir (sibling), never inside it,
@@ -587,20 +609,31 @@ export function apply(ctx, config = {}) {
             ...BASE_HEADERS,
             'content-type': 'text/html; charset=utf-8',
             // The page is same-origin with the host GUI and only talks to this
-            // API; scope CSP to that. 'unsafe-inline' is required because the
-            // whole app is one inline <script> (no build step), and inline
-            // styles set element positions for the animated background.
-            'content-security-policy': [
-              "default-src 'none'",
-              "script-src 'unsafe-inline'",
-              "style-src 'unsafe-inline'",
-              'img-src data: blob:',
-              "connect-src 'self'",
-              "font-src 'self'",
-              "frame-ancestors 'self'",
-            ].join('; '),
+            // API. The stylesheet and the app script are separate files served
+            // from here, so 'self' covers both and 'unsafe-inline' is no longer
+            // needed for either — it was only required back when the whole app
+            // was one inline <script>.
+            'content-security-policy': PAGE_CSP,
           })
           res.end(readFileSync(join(webRoot, 'index.html')))
+          return
+        }
+
+        /* Static assets for the page: app.css and app.js. An explicit
+         * allow-list rather than a directory server — `web/` holds only these
+         * three files today, and an allow-list cannot be tricked into serving
+         * something else that ends up in there later. The CSP header goes on
+         * these responses too: for a normal subresource the document's policy
+         * governs, but a direct navigation to either URL makes it the top-level
+         * document, and then the header is the only thing constraining it. */
+        if (pathname === '/git-graph/app.css' || pathname === '/git-graph/app.js') {
+          const isCss = pathname.endsWith('.css')
+          res.writeHead(200, {
+            ...BASE_HEADERS,
+            'content-type': isCss ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8',
+            'content-security-policy': PAGE_CSP,
+          })
+          res.end(readFileSync(join(webRoot, isCss ? 'app.css' : 'app.js')))
           return
         }
 
