@@ -1,73 +1,34 @@
 # dsh-git-graph
 
-> 🧭 **A ready-to-use git visualizer for the DSH ecosystem.** An embedded git tool for the DeepSeek Harness (DSH) Web GUI: GitHub-style commit graph, branch management, code diffs, and a VSCode-style uncommitted changes panel — all inside your AI session, no need to switch to another git client.
+**Ready-to-use git visualization inside DSH.** Commit history graph, branch management, diffs and working-tree changes, embedded in the DeepSeek Harness conversation pane — no switching to another git client while you work with AI.
 
-An embedded git repository graph visualizer for the DeepSeek Harness (DSH) Web GUI.
+[中文](./README.md) · [English](./README_EN.md) · ![DSH Plugin](https://img.shields.io/badge/DSH-Plugin-58a6ff)
 
-View, browse and manage git repositories right inside the harness conversation — commit history graph, branch filtering, commit details, file diffs and working-tree changes, all embedded in the interface without leaving the current session. See at a glance what changed, who changed it, and whether to commit.
+<img src="assets/git-graph-demo.png" alt="Git graph" width="760">
 
-**Who it's for**: developers doing AI coding / agent development with DeepSeek Harness; git users who want commit history, branches and working-tree changes in one view; developers and teams looking for a more visual git tool than the command line.
+## Why it exists
 
-> 🔍 Search keywords: DSH plugin · DeepSeek Harness plugin · git visualization · git graph · commit history · branch management · code diff · VSCode-style changes panel · git productivity tool · AI coding assistant
+- **Never leave the session**: the graph is a tab next to the trajectory tab. Switch workspaces and the graph follows to that repo automatically.
+- **No waiting**: the first screen paints 50 commits and pulls more as you scroll. The branch list and the ref probe in the auto-refresh tick read ref files under `.git` directly — **no git process at all**. On machines where real-time AV makes each `git` launch cost hundreds of milliseconds, this is what "reading history feels fast" comes down to.
+- **Not read-only**: stage, commit, restore, tag, switch branches, fetch and push from the page. Destructive actions always ask first.
 
-> 🛠 This plugin is developed with AI assistance.
-
-![Git 图谱](https://img.shields.io/badge/DSH-Plugin-58a6ff)
-
-## 📸 Preview
-
-<img src="assets/git-graph-demo.png" alt="Git Graph demo" width="720">
-
-## ✨ Features
-
-- **Commit history graph**: GitHub-style commit list with foldable per-branch groups and branch coloring (local and remote branches each get their own group)
-- **Lane graph (shown only in flat mode)**: switch to "Flat" (平铺) in the ⚙ Settings dialog at the far right of the top bar to enter the continuous-timeline view, where the left gutter draws real branch lanes using the same "reserved point" layout as VS Code Git Graph, so forks and merges curve correctly. **The default per-branch grouped view shows no lane graph** — group headers would break the lanes, so it is cleaner not to draw them
-- **Follows the current session (workspace auto-detection)**: automatically resolves the current session's working directory and shows its git repository; **switching the working copy switches the graph to that repo automatically (v0.20)** — no manual refresh needed when changing sessions or workspaces. The "last picked repo" memory is kept per workspace, so it neither bleeds across workspaces nor makes the graph ignore a switch. Non-git workspaces show an empty state with a 「🖥 Find git repos in the current session directory」 button that shallow-scans the workspace and its subdirectories
-- **📂 Open folder (v0.11)**: not limited to the current session workspace — click the folder icon at the right of the top bar (tooltip: "打开文件夹"), or "Open folder" in the empty state, to browse the disk (drives → folders, with git markers), pick any folder (e.g. a repo B in another workspace) and view its version control; added repos persist, switch via the top dropdown any time, and they survive a page refresh
-- **Branch filtering**: checked = visible, unchecked = fully hidden (empty selection shows an empty list)
-- **Commit details**: commit message, changed files, per-file diffs, compare two commits (Ctrl+click), 📜 file history (every commit touching a file); the detail panel is **resizable** — drag the splitter, double-click it to reset, and the width is remembered
-- **Uncommitted changes (VSCode-style, persistent at the top of the graph)**: grouped file lists (Staged / Changes / Untracked), status badges (A/M/D/R/U/?), per-file +/− line counts, click-to-expand per-file diff (syntax highlighted), renames `old → new`, untracked file contents; the ☑ groups toggle hides any group, and both the panel and each group fold on click; **per-row stage/unstage/restore, top-bar stage-all/commit, checkboxes for batch actions (stage/unstage/restore/ignore/commit selected)** (destructive actions ask for confirmation first); the commit dialog can **✨ AI-generate a commit message** (heuristic candidates from the diff, editable)
-- **Right-click menu**: copy hash/message, view details, 🏷️ tag a commit (rename/delete tags too), 🌿 create a branch from this commit, 🌐 open the GitHub commit page, copy repo path, open in file manager
-- **Remote/branch operations**: top-bar `⬇ Fetch` (git fetch) and `⬆ Push` (git push current branch, confirmed first); branch-group right-click — local branches: 🔄 switch / ⬆ push / 🗑️ delete (merged-only, HEAD protected), remote branches: ⬇ fetch / copy remote branch name
-- **Remote branches always visible**: remote group headers render even when fully synced with a local branch, labelled 「已同步」(synced) or 「已包含」(contained)
-- **Auto-update (degrades by mount type)**: on normal installs it silently checks the latest GitHub tag when the graph opens; when a newer version exists the top bar shows 「🔄 新版本 vX.Y」— one click downloads and swaps the plugin files (old files are backed up, failures roll back automatically), then a restart applies it. When the plugin is mounted from a git checkout (`link:`), the update button hides automatically and the UI suggests `git pull` instead — files owned by git are never overwritten
-- **Top bar layout (v0.25)**: title + repo switcher on the left; **branch filter → date → search** in the centre, centred on the bar itself (not on the leftover space, so growing side groups cannot shift them); four icon buttons (open folder / fetch / push / refresh) on the right, then a hairline, then **⚙ Settings** at the far right. Icon buttons are glyph-only; the name lives in the tooltip and `aria-label`.
-- **⚙ Settings (second-level page, v0.25)**: the gear opens a dialog holding the two set-once choices — **view** (grouped / flat) and **theme** — plus a shortcut-panel entry. The top bar no longer carries "Flat" and "Theme" buttons; themes render as a grid of colour chips with the current one highlighted, and the gear shows a small dot whenever a choice is away from its default.
-- **State memory**: branch filter, group toggles, fold states and theme. **Since v0.22 these are stored on disk** (`.state/prefs.json` next to the plugin), so they survive a DSH restart or port change — localStorage is origin-scoped and used to reset silently when the port moved (keys unified to `gg2-*` since v0.8; branch groups are expanded by default on first open)
-- **Multi-repo switching**: a dropdown at the top of the graph page switches between repos
-- **Large-repo support**: the first screen loads 50 commits; scrolling down pulls 100 more per step (only when you reach the bottom, never pre-fetching everything). Commit details, per-file diffs and file history are cached in memory, so re-opening one costs no request
-- **Cache scope**: the cache lives only in the current page's memory (Maps) and is released when the plugin tab closes, the page reloads or the app restarts — nothing is written to localStorage, so no stale data can survive. It is also cleared explicitly on repo switch and after any git write operation
-- **Low overhead (v0.19)**: every endpoint launches `git` only when it must — **the branch list and the 5s change probe read the ref files under `.git` directly (zero processes)**, the branch name comes from `.git/HEAD`, repo validity from the `.git` entry, commit details from a single `show --stat`, a single-file diff from one `show`, `numstat` is skipped on a clean tree, and the commit total is fetched asynchronously so it never delays the first paint. On machines where process creation is slow (real-time AV) a single `git` launch can cost hundreds of milliseconds, so this is what "reading history feels fast" comes down to: `branches` went from 871ms to **1–2ms**, the 5s poll from one process per tick to **zero**, and the first screen needs just one process
-- **Keyboard shortcuts**: `Ctrl+F` search, `Ctrl+/` shortcut panel, `Ctrl+B` fold/unfold all branch groups, `↑↓`/`j`/`k` to step through commits (opening each one), `Esc` close. **The mouse and the arrow keys share one cursor**: click row 6, press ↓, land on row 7 — the dashed outline always shows where the keyboard will continue from
-- **Auto refresh**: while the page is visible it polls every 5s with a lightweight `for-each-ref` signature and updates the stats bar and list when the working tree or new commits change
-- **Theme system**: auto-follow / dark / light, plus **8 style presets** (same set as 拾光记) — 🌸 sakura (falling petals), 🌊 ocean (waves/bubbles/fish), 🌲 forest (trees/leaves/fireflies/butterflies), 🌙 night (stars/moon/meteors), 🍬 candy (rainbow/ribbons/lollipops), 💼 business (geometric shapes/glass blocks), ✨ starry (stars/moon/meteors/earth), 🤖 tech (circuits/gears/chips), each with its own animated background (ocean/tech/business/candy have higher element density)
-- **Mount point**: the "Git 图谱" tab inside the session pane (next to the trajectory tab)
-
-## 📦 Installation
-
-### Option 1: one-line install via the official CLI (recommended)
+## Install
 
 ```bash
-# Install from GitHub
+# From GitHub
 dsh plugin --profile web add github:siqyka/dsh-git-graph
 
-# Or install from npm (scoped package name, see "Distribution" below)
+# Or from npm (scoped package, see "Distribution")
 dsh plugin --profile web add @<scope>/dsh-git-graph
 ```
 
-Restart `dsh web` afterwards. The command registers the plugin as a profile bundle (`dsh.profile.bundles`) automatically and checks `peerDependencies["@deepseek-ai/dsh"]` against your running DSH — incompatible combinations are rejected with a reason.
+**Restart `dsh web`** afterwards, open the address it prints, then pick the **Git 图谱** tab in any session (next to the trajectory tab).
 
-### Option 2: local directory mount (developers / offline)
-
-```bash
-dsh plugin --profile web add link:<path to this repository>
-```
-
-`link:` mounts the repository directory directly — after editing code, a `dsh web` restart shows your changes (no file copying).
+**Developers / offline**: `dsh plugin --profile web add link:<path to this repo>` mounts the directory directly — edit code, restart `dsh web`, no file copying.
 
 ### Optional: fixed repo allowlist
 
-**No configuration is required by default** — the graph auto-discovers git repositories in the current session workspace, and the "📂 Open" button lets you browse and add any folder's repo on the fly (picks are remembered). To pin an allowlist, add `config` to the plugin row in your profile's `cordis.patch.yml`:
+**No configuration is required.** The graph discovers git repos in the current session workspace, and repos added through "Open folder" are remembered. To pin an allowlist, add `config` to the plugin row in your profile's `cordis.patch.yml`:
 
 ```yaml
 - insert:
@@ -77,75 +38,102 @@ dsh plugin --profile web add link:<path to this repository>
         repo: "C:/path/to/your/repo"   # or repos: [ ... ]
 ```
 
-Open http://127.0.0.1:3080 and select the **Git 图谱** tab in any session.
+## Features
 
-> **Permissions & provenance**: the plugin runs read-only `git` commands (graph/diff/log)
-> inside directories you authorize; write operations (stage/commit/push…) always ask for
-> your confirmation in the graph page. **Self-update degrades by mount type**: when mounted
-> from a git checkout (`link:`) the one-click update is disabled (so it never rewrites files
-> your git owns) — upgrade with `git pull` in the plugin repository instead; other install
-> shapes keep the GitHub one-click self-update (with backup and rollback). Compatibility
-> declarations and isolated-test evidence live in [docs/compatibility.md](docs/compatibility.md);
-> run `node scripts/check-compat.mjs` before releases to verify coverage of the official
-> latest/next release window.
+### 📜 Reading history
 
-### Distribution
+- **Commit graph**: GitHub-style list with local and remote branches grouped and colour-coded separately; group headers fold on click.
+- **Lane graph**: in flat mode the left gutter draws real fork and merge curves using the same "reserved point" layout as VS Code Git Graph. Grouped mode draws none — group headers would break the lanes.
+- **Commit details**: changed files, per-file diffs, full patch, and 📜 file history for any single file. The detail panel resizes by dragging, double-click resets, and the width is remembered.
+- **Three filters**: branch (unchecked = fully hidden), date range (in-app calendar, either end may be empty), and search across message / author / hash / email. Empty results offer a "show all branches" or "clear filters" way out.
+- **Keyboard navigation**: `↑` `↓` / `j` `k` step through commits and open each detail. The mouse and the arrows share **one cursor** — click row 6, press `↓`, land on row 7.
 
-- **GitHub**: this repository carries the `dsh-plugin` topic; `dsh plugin add github:…` installs directly
-- **npm**: `@<scope>/dsh-git-graph` (published under the scope from `npm whoami`; run `npm run publish:npm` for the pre-publish check chain)
+### 📝 Working tree
 
-### Compatibility range
+- **Uncommitted changes** sit permanently at the top of the graph: staged / changes / untracked groups, status badges `A/M/D/R/U/?` and per-file `+/−` counts.
+- Click a row to expand its diff (syntax highlighted); renames show `new ← old` and untracked files show their contents. The ☑ groups menu hides any group.
+- Per-row **stage / unstage / restore**; top-bar **stage all / commit**; checkboxes for batch **stage / unstage / restore / ignore / commit selected** (commits only the selected files, leaving the rest alone).
+- The commit dialog offers **✨ AI-generate a commit message**: heuristic candidates from the diff stats, editable. No external AI call.
+- Past 10 files the list scrolls internally, keeping the top-bar buttons and the batch bar pinned.
 
-Declared in `package.json`: both `engines.dsh` and `peerDependencies["@deepseek-ai/dsh"]` are `>=0.1.0-rc.6 <0.3.0`. Isolated tests (separate `DSH_HOME`, full add → dump-config → remove cycle) pass on **0.1.7-rc.2** (latest stable track) and **0.2.0-rc.1** (next preview track); evidence in [docs/compatibility.md](docs/compatibility.md).
+### 🌿 Branches
 
-## 🖱️ Usage
+- **Top-bar icons**: open folder / fetch (`fetch --all --prune`) / push current branch / refresh.
+- **Branch group right-click**: local branches switch / push / delete (`-d` refuses unmerged, HEAD protected); remote branches fetch / copy name. Remote group headers always render, labelled "synced" or "contained".
+- **Commit row right-click**: copy hash / message, tag (rename, delete), create a branch from this commit, open the GitHub commit page, copy repo path, reveal in file manager.
+- **Multiple repos**: "Open folder" browses the disk to add any repo, remembers it, and the top dropdown switches between them.
+
+### 🎨 Living with it
+
+- **Themes**: auto / dark / light plus 8 style presets (🌸 sakura · 🌊 ocean · 🌲 forest · 🌙 night · 🍬 candy · 💼 business · ✨ starry · 🤖 tech), each with its own animated background.
+- **⚙ Settings** (gear, second-level page): view (grouped / flat), theme (a grid of colour chips), and a shortcut-panel entry. A small dot on the gear marks any non-default choice.
+- **State memory**: filters, fold states, theme and date range persist to `.state/prefs.json` next to the plugin — surviving a port change or a `dsh web` restart (localStorage is origin-scoped and silently resets when the port moves).
+- **Auto refresh**: while visible, a 5-second probe updates the stats and list; workspace changes are followed every 3 seconds.
+- **Auto-update**: silently checks the latest GitHub tag and swaps the files in one click (backup first, automatic rollback on failure), applied on restart. When mounted via `link:` the button hides and suggests `git pull` instead — files owned by git are never rewritten.
+
+## Usage
 
 | Action | Description |
 | --- | --- |
 | "Git 图谱" tab in a session | Open the graph for the current session's workspace |
-| 📂 Open folder (top-bar icon / empty-state button) | Browse the disk and pick any git repo (e.g. folder B in another workspace); it is added and its graph is shown (v0.11) |
-| Repo dropdown at the top | Switch repositories - the repo label to its left shows the full path |
+| Repo dropdown at the top | Switch repositories; the label to its left shows the full path |
 | Branch group header | Click to fold / unfold that branch |
-| ☑ Branch filter | Checked = visible, unchecked = fully hidden |
-| "未提交改动" block at the top of the graph | Staged / Changes / Untracked overview (incl. untracked files); click a file row to expand its diff; per-row stage/unstage/restore; batch actions via checkboxes |
-| Commit row | Click for details; Ctrl+click to compare with another commit |
-| Splitter left of the detail panel | Drag horizontally to resize the panel; double-click to reset (width is remembered, min 260px) |
-| Right-click a commit row | Copy / details / tag / create branch from commit / open GitHub commit page / copy repo path / open in file manager |
-| "未提交改动" status line | Click to scroll to the top changes block |
-| ↻ Refresh (top-bar icon) | Reload repository data |
-| ⬇ Fetch / ⬆ Push (top-bar icons) | git fetch / git push the current branch (push asks first) |
-| ⚙ Settings (far right) | Second-level page: view (grouped / flat), theme (11 options), shortcut entry |
+| "分支过滤" (top bar, centre) | Checked = visible, unchecked = fully hidden |
+| "日期" (top bar, centre) | In-app calendar: click a day to set the start, another for the end, with the span tinted. The 从 / 到 chips are clickable and decide which end the calendar writes to. Presets for 7 / 30 / 90 days and a year, plus 今天 and year/month stepping. One end alone is a single-sided limit; a reversed range is swapped silently |
+| Search box (top bar, centre) | Filter by message / author / hash / email |
+| "未提交改动" block at the top of the graph | See "Working tree" above; clicking the change count in the status line scrolls back to it |
+| Commit row | Click for details |
+| Commit row right-click | Copy / tag / branch / open GitHub / open folder |
+| 📜 in the commit details | File history for that path |
+| Splitter left of the detail panel | Drag to resize; double-click to reset (min 260px) |
+| Top-bar icons | Open folder / fetch / push / refresh |
+| ⚙ Settings (far right) | View, theme, shortcuts |
 
-## 🛠️ Development
+**Shortcuts**: `Ctrl+F` search · `Ctrl+/` shortcut panel · `Ctrl+B` fold / unfold all branch groups · `↑` `↓` / `j` `k` step through commits · `Enter` reopen the current detail · `Esc` close panels.
+
+## Development
 
 ```
-git-graph/
-├── index.js          # Server half: git API (graph/branches/workstatus/workfile/diff/...)
-├── client.js         # Client half: "Git 图谱" session tab
-├── web/index.html    # The graph page (standalone page inside an iframe)
-├── package.json      # Plugin manifest (dsh.client + bundle patch + peerDependencies)
+dsh-git-graph/
+├── index.js          # Server half: /git-graph prefix routes + git API
+├── client.js         # Client half: registers the conversation.view tab
+├── web/index.html    # Page shell (standalone page inside an iframe, markup only)
+├── web/app.css       # Page styles (external stylesheet)
+├── web/app.js        # Page logic (external script)
+├── package.json      # Plugin manifest (dsh.client + dsh.bundle.patch + engines.dsh)
 ├── cordis.patch.yml  # Profile mount point
-└── scripts/          # check-compat.mjs / publish.mjs / compat-isolated-test.ps1
+├── scripts/          # check-compat.mjs / publish.mjs / compat-isolated-test.ps1
+└── docs/             # Compatibility and security-audit evidence
 ```
-
-Development workflow (single source of truth = this repository, mounted into the profile via `link:`):
 
 ```bash
 # One-time mount (no need to repeat after code changes)
 dsh plugin --profile web add link:<path to this repository>
 
 # After editing
-node --check index.js client.js   # syntax check (same for the web/index.html inline script)
-# Restart dsh web to apply (index.js / client.js changes need a restart; web/index.html only needs a refresh)
+node --check index.js client.js && node --check web/app.js
+# index.js / client.js changes need a dsh web restart; the three web/ files only need a refresh
 ```
 
-Release flow: `npm run check:compat` (official window coverage) → `pwsh -File scripts/compat-isolated-test.ps1` (isolated tests on anchor versions) → bump version → `npm run publish:npm` (after scoping the name) → `git commit` → `git tag vX.Y` → push. See `AGENTS.md` for full development conventions.
+Release flow: `npm run check:compat` → `pwsh -File scripts/compat-isolated-test.ps1` (isolated tests on anchor versions) → bump version → `git commit` → `git tag vX.Y` → `npm run publish:npm` (after scoping the name). Full conventions live in [AGENTS.md](AGENTS.md).
 
-## 📄 License
+## Compatibility & security
+
+- **Compatibility range**: both `engines.dsh` and `peerDependencies["@deepseek-ai/dsh"]` are `>=0.1.0-rc.6 <0.3.0`. Isolated tests (separate `DSH_HOME`, full add → dump-config → remove cycle) pass on **0.1.7-rc.2** (latest) and **0.2.0-rc.1** (next); evidence in [docs/compatibility.md](docs/compatibility.md).
+- **Read-only by default**: git is always invoked through `execFile` with fixed argument arrays, never a shell; file paths are `resolve`d and prefix-checked against traversal; long output is truncated.
+- **Write operations must be POST** and are validated for same-origin Origin / Referer. The page ships a strict CSP (`script-src 'self'`, `style-src 'self'`, no inline allowance at all).
+- **Permissions & provenance**: git runs only inside directories you authorize; network access is limited to self-update and `fetch`/`pull`/`push`; no lifecycle scripts, and DSH core is never touched.
+
+## Distribution
+
+- **GitHub**: this repository carries the `dsh-plugin` topic, so `dsh plugin add github:…` installs directly.
+- **npm**: `@<scope>/dsh-git-graph` (published under the scope from `npm whoami`).
+
+## License
 
 [MIT](./LICENSE)
 
-## 🙏 Acknowledgements
+## Acknowledgements
 
 - [DeepSeek Harness](https://github.com/deepseek-ai/) — the plugin platform
 - [quansheng](https://github.com/1841220388zzzcccxxx-star) — original author of this project; every line of code and documentation before v0.22.0 is his work. This repository is a fork of his [dsh-git-graph](https://github.com/1841220388zzzcccxxx-star/dsh-git-graph)
