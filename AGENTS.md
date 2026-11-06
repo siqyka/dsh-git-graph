@@ -183,7 +183,7 @@ dsh-git-graph 是 DeepSeek Harness (DSH) Web GUI 的嵌入式 Git 仓库图谱�
 4. `index.js` / `client.js` 改动需重启 dsh web；`web/` 三个页面文件刷新即生效
 5. 服务端功能测试：构造场景仓库（staged / unstaged / untracked / rename / MM / 删除），用 mock `webServer` 直接调 handler 断言 JSON；页面级用临时 http server + 浏览器验证
 6. 版本节奏：功能迭代 → `npm run check:compat` → 锚点版本隔离实测（`pwsh -File scripts/compat-isolated-test.ps1`）→ `package.json` version 同步 → `git commit` → `git tag vX.Y`
-7. npm 发布：改名 scoped 包（`npm whoami`）后 `npm run publish:npm`（自动跑语法/兼容/pack 检查链，强制官方 registry）
+7. npm 发布：`npm run publish:npm`（自动跑三处包名一致性、语法、兼容、pack 检查链，强制官方 registry）。发布后核对 `npm view @shiqyka/dsh-git-graph version`；registry 有几十秒到数分钟的处理延迟，`npm publish` 打印 `202` 后首次查询 404 属正常，要轮询而不是当成失败重发（重发会撞 `EPUBLISHCONFLICT`）。
 
 ## 注意
 
