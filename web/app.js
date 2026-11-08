@@ -24,6 +24,10 @@ const DETAIL_CACHE = new Map();   // hash -> {info, diff}
 const FILEDIFF_CACHE = new Map(); // hash\0file -> filediff response
 const FILELOG_CACHE = new Map();  // file -> filelog response
 const PAGE_LIMIT = 400;           // safety cap so a long session cannot grow unbounded
+/* Working-tree diffs are much larger than commit metadata, so they get a
+ * tighter cap: 80 × a few hundred KB stays bounded while still covering every
+ * file of a typical dirty tree. */
+const WD_CACHE_LIMIT = 80;
 function cacheGet(map, key) {
   const v = map.get(key);
   if (v === undefined) return undefined;
@@ -31,9 +35,9 @@ function cacheGet(map, key) {
   map.delete(key); map.set(key, v);
   return v;
 }
-function cacheSet(map, key, val) {
+function cacheSet(map, key, val, limit = PAGE_LIMIT) {
   map.set(key, val);
-  if (map.size > PAGE_LIMIT) {
+  if (map.size > limit) {
     // drop the oldest entry (Map keeps insertion order)
     const oldest = map.keys().next();
     if (!oldest.done) map.delete(oldest.value);
@@ -76,9 +80,6 @@ let SELECTED = null;
 let SEARCH = "";
 let FILTER = "all";        // "all" | "multi"
 let HIGHLIGHT = null;      // branch sha highlighted via legend click (others ghosted)
-let SCALE = 1;
-let PAN = { x: 0, y: 0 };
-let drag = null;
 
 const ROW_H = 40, LANE_W = 30, X0 = 26, Y0 = 46, NODE_R = 6;
 const LANE_COLORS = [
@@ -96,7 +97,8 @@ function authorColor(name) {
 }
 
 /* Branch color of a commit: HEAD branch green, other local branches in order,
- * remotes grey, shared history follows the HEAD branch. Cached per render. */
+ * remotes grey, shared history follows the HEAD branch. The cache lives until
+ * the commit/branch set changes (load / loadMore / reloadGraphLight). */
 const BRANCH_PALETTE = LANE_COLORS.filter((c) => c !== "#3fb950");
 let BRANCH_COLOR_CACHE = null;
 function branchColorOf(hash) {
@@ -123,7 +125,19 @@ function branchColorOf(hash) {
 }
 
 const $ = (id) => document.getElementById(id);
-const byHash = () => new Map(COMMITS.map((c) => [c.hash, c]));
+let COMMIT_MAP = null;
+let COMMIT_MAP_SRC = null;
+let COMMIT_MAP_LEN = -1;
+/** Hash -> commit, rebuilt only when the COMMITS array is replaced or grows.
+ *  The old version allocated a fresh Map on every call, and renderLaneGraph()
+ *  called it once PER NODE — O(n²) Map insertions on a loaded history. */
+function byHash() {
+  if (COMMIT_MAP && COMMIT_MAP_SRC === COMMITS && COMMIT_MAP_LEN === COMMITS.length) return COMMIT_MAP;
+  COMMIT_MAP = new Map(COMMITS.map((c) => [c.hash, c]));
+  COMMIT_MAP_SRC = COMMITS;
+  COMMIT_MAP_LEN = COMMITS.length;
+  return COMMIT_MAP;
+}
 
 /* ===================== theme (8 style presets, ported from 拾光记) ===================== */
 // themePref: 'auto' | 'dark' | 'light' | 'sakura' | 'ocean' | 'forest' | 'night' | 'candy' | 'business' | 'starry' | 'tech'
@@ -430,46 +444,6 @@ function normalizeBranch(b) {
   return b;
 }
 
-/* ===================== layout ===================== */
-function layout() {
-  // Classic git-graph lane assignment, processed oldest -> newest so a commit
-  // can continue the lane of its ALREADY-PLACED parent. Every commit of one
-  // first-parent chain therefore lands on the same lane: one straight vertical
-  // line per branch.
-  const childCount = new Map();
-  for (const c of COMMITS) {
-    for (const p of c.parents) childCount.set(p, (childCount.get(p) || 0) + 1);
-  }
-  const laneOf = new Map();
-  const lanes = []; // lane -> last commit hash | null (released)
-  for (let k = COMMITS.length - 1; k >= 0; k--) {
-    const c = COMMITS[k];
-    let chosen = -1;
-    // continue the lane of the first already-placed parent
-    for (const p of c.parents) {
-      const li = laneOf.get(p);
-      if (li !== undefined && lanes[li] === p) { chosen = li; break; }
-    }
-    if (chosen === -1) {
-      // reuse a released lane if possible
-      for (let li = 0; li < lanes.length; li++) {
-        if (lanes[li] === null) { chosen = li; break; }
-      }
-      if (chosen === -1) { chosen = lanes.length; lanes.push(null); }
-    }
-    laneOf.set(c.hash, chosen);
-    lanes[chosen] = c.hash;
-    // release a lane whose last commit now has every child placed
-    for (let li = 0; li < lanes.length; li++) {
-      const last = lanes[li];
-      if (last === null || last === c.hash) continue;
-      const kids = COMMITS.filter((k2) => k2.parents.includes(last));
-      if (kids.length > 0 && kids.every((k2) => laneOf.has(k2.hash))) lanes[li] = null;
-    }
-  }
-  return { laneOf, laneCount: lanes.length };
-}
-
 /** Set of commits reachable from tip (BFS over parents). */
 function reachable(tip) {
   const map = byHash();
@@ -753,8 +727,11 @@ function renderLaneGraph(list, rowEls) {
   }
 
   // --- nodes on top of the edges
+  // One map for all nodes: byHash() used to allocate a fresh Map of every
+  // commit on each iteration, which is O(n²) Map inserts on a loaded history.
+  const map = byHash();
   for (const [, p] of nodePos) {
-    const c = byHash().get(p.hash);
+    const c = map.get(p.hash);
     const isHead = c && c.refs.some((r) => r.head);
     const hit = document.createElementNS(NS, "circle");
     hit.setAttribute("class", "lane-hit");
@@ -766,6 +743,7 @@ function renderLaneGraph(list, rowEls) {
     svg.appendChild(hit);
 
     const node = document.createElementNS(NS, "circle");
+    node.dataset.hash = p.hash;
     node.setAttribute("class", "lane-node" + (isHead ? " head" : "") + (SELECTED === p.hash ? " sel" : ""));
     node.setAttribute("cx", p.x);
     node.setAttribute("cy", p.y);
@@ -788,7 +766,8 @@ function renderLaneGraph(list, rowEls) {
  * normal .cl-ref styling and stay crisp at any zoom.
  */
 function render() {
-  BRANCH_COLOR_CACHE = null;
+  // Branch colours are invalidated when the commit/branch set changes (load,
+  // loadMore, reloadGraphLight), not on every filter or selection repaint.
   const map = byHash();
   const vis = visibleSet();
   const hlSet = HIGHLIGHT ? reachable(HIGHLIGHT) : null;
@@ -953,6 +932,32 @@ function render() {
   }
 
   renderLegend();
+}
+
+/** Move the one visible selection without rebuilding the list.
+ *  Selection only changes `.sel` on a row and its lane node; a full render()
+ *  rebuilt every row and the branch-colour map on every click / arrow key.
+ *  Returns false when the hash has no row (filtered, collapsed, another page),
+ *  so the caller can fall back to a full render and keep the state visible. */
+function applySelection(hash) {
+  const list = $("commitList");
+  // A commit can rarely be rendered under more than one group; select every
+  // row with this hash so the visual state matches what a full render would do.
+  const targets = hash ? [...list.querySelectorAll(`.cl-row[data-hash="${hash}"]`)] : [];
+  if (hash && !targets.length) return false;
+  for (const el of list.querySelectorAll(".cl-row.sel")) el.classList.remove("sel");
+  for (const el of targets) el.classList.add("sel");
+  for (const el of list.querySelectorAll("#laneSvg .lane-node.sel")) {
+    el.classList.remove("sel");
+    el.setAttribute("r", "4.8");
+  }
+  if (hash) {
+    for (const node of list.querySelectorAll(`#laneSvg .lane-node[data-hash="${hash}"]`)) {
+      node.classList.add("sel");
+      node.setAttribute("r", "6.5");
+    }
+  }
+  return true;
 }
 
 /* Is there plausibly another page? TOTAL === 0 means "not known yet" (the count
@@ -1476,13 +1481,6 @@ function ensureLayout() {
   return CACHE_LAYOUT;
 }
 
-function getLaneOf(hash) {
-  if (!CACHE_LAYOUT) return 0;
-  const n = CACHE_LAYOUT.nodes.find((x) => x.hash === hash);
-  return n ? n.lane : 0;
-}
-
-
 /* ===================== interactions ===================== */
 const tip = document.createElement("div");
 tip.className = "tooltip";
@@ -1506,7 +1504,7 @@ function moveTip(ev) {
 function hideTip() { tip.style.display = "none"; }
 
 /* No left-drag panning and no wheel zoom: the graph scrolls naturally with the
- * mouse wheel (graphWrap is overflow:auto). SCALE/PAN stay fixed at defaults. */
+ * mouse wheel (graphWrap is overflow:auto). */
 
 /* ===================== detail ===================== */
 /* Detail panel width is user-resizable (splitter scrub), persisted in localStorage.
@@ -1549,7 +1547,11 @@ function setDetailOpen(open) {
 }
 async function selectCommit(hash, scroll = false) {
   SELECTED = hash;
-  render();
+  // Selection only changes .sel classes; repainting the whole list (and
+  // rebuilding the branch-colour map) made every click / arrow key do O(n) DOM
+  // work. If the target has no row (filtered/collapsed/not loaded), fall back
+  // to a full render so the cursor state still has a visible owner.
+  if (!applySelection(hash)) render();
   if (scroll) scrollToNode(hash);
   setDetailOpen(true);
   const d = $("dContent");
@@ -1563,12 +1565,19 @@ async function selectCommit(hash, scroll = false) {
   loading.textContent = "加载详情…";
   d.appendChild(loading);
   try {
+    // Root commits have no parent and therefore no diff. When the parent list
+    // is already loaded, skip the second git process entirely; otherwise start
+    // both requests at once and drop the diff if show reveals a root commit.
+    const known = byHash().get(hash);
+    const knownRoot = Boolean(known && known.parents.length === 0);
+    let diffFailed = false;
+    const diffP = knownRoot ? null : api("diff", { hash }).catch(() => { diffFailed = true; return null; });
     const info = await api("show", { hash });
     if (!info.ok) { d.textContent = "加载失败: " + (info.error || "?"); return; }
-    const firstParent = info.parents[0];
-    const diff = firstParent ? await api("diff", { hash }) : null;
-    // don't cache failures; a transient git error should be retryable
-    if (info.ok) cacheSet(DETAIL_CACHE, hash, { info, diff });
+    const diff = diffP && info.parents.length ? await diffP : null;
+    // don't cache failures; a transient git error should be retryable. A root
+    // commit's null diff is valid, so that case is always cacheable.
+    if (!diffFailed || info.parents.length === 0) cacheSet(DETAIL_CACHE, hash, { info, diff });
     // the user may have clicked another commit while this was in flight
     if (SELECTED !== hash) return;
     renderDetail(info, diff);
@@ -1850,6 +1859,38 @@ async function showFileHist(file, rowEl) {
 
 /* ===================== workdir modal (VSCode-style) ===================== */
 /* ===================== workdir panel (persistent, top of the graph) ===================== */
+let WD_SIG = null;   // last applied workstatus shape, for the 5s poll
+
+/** Stable JSON of everything the panel displays. The old auto-refresh
+ *  compared only {branch, counts}, so editing an already-dirty file (counts
+ *  unchanged) never repainted the file list. */
+function workstatusSig(ws) {
+  if (!ws) return "";
+  const files = (list) => (list || []).map((f) => [
+    f.path, f.oldPath || "", f.code || "",
+    f.added === undefined ? null : f.added,
+    f.deleted === undefined ? null : f.deleted,
+    f.binary ? 1 : 0,
+  ]);
+  return JSON.stringify([
+    ws.branch || "",
+    ws.counts || {},
+    files(ws.staged), files(ws.unstaged), files(ws.untracked),
+  ]);
+}
+
+/** Apply an already-fetched workstatus response: cache signature, invalidate
+ *  per-file diffs when asked, and repaint the panel. Shared by the manual
+ *  refresh and the poll so both paths agree on what "changed" means. */
+function applyWorkstatus(ws, clearDiffs) {
+  WD_SIG = workstatusSig(ws);
+  WORKSTATUS = ws;
+  if (clearDiffs) wdDiffCache.clear();
+  renderWorkdir();
+  renderStatusLine();
+  renderStats();
+}
+
 /** Fetch workstatus, then render the top panel + status line. */
 async function refreshWorkdir() {
   const panel = $("wdPanel");
@@ -1861,10 +1902,7 @@ async function refreshWorkdir() {
   try {
     const ws = await api("workstatus");
     if (!ws.ok) { panel.innerHTML = ""; return; }
-    WORKSTATUS = ws;
-    renderWorkdir();
-    renderStatusLine();
-    renderStats();
+    applyWorkstatus(ws, false);
   } catch { /* ignore */ }
 }
 
@@ -2163,7 +2201,7 @@ function renderWdGroupsRows(body) {
 /** Load one file's diff (or content for untracked) on demand; cached. */
 async function loadWdFile(item, staged, pre) {
   const key = staged + "\u0000" + item.path;
-  const cached = wdDiffCache.get(key);
+  const cached = cacheGet(wdDiffCache, key);
   if (cached) { renderWdText(pre, cached.text, cached.isDiff); return; }
   try {
     const res = await api("workfile", { file: item.path, staged, ...(item.oldPath ? { old: item.oldPath } : {}) });
@@ -2183,7 +2221,7 @@ async function loadWdFile(item, staged, pre) {
       isDiff = true;
       if (res.truncated) text = "（diff 过长已截断）\n" + text;
     }
-    wdDiffCache.set(key, { text, isDiff });
+    cacheSet(wdDiffCache, key, { text, isDiff }, WD_CACHE_LIMIT);
     renderWdText(pre, text, isDiff);
   } catch (err) {
     pre.textContent = "加载失败: " + err.message;
@@ -2195,11 +2233,17 @@ function renderWdText(pre, text, isDiff) {
   else pre.textContent = text;
 }
 
+/** Above this many lines, diff colouring costs more than it is worth. */
+const MAX_HIGHLIGHT_LINES = 3000;
 /** Render unified-diff text into a <pre> with line-level coloring. */
 function highlightDiff(pre, text) {
   pre.textContent = "";
   if (!text) return;
-  const lines = String(text).split("\n");
+  const raw = String(text);
+  const lines = raw.split("\n");
+  // One <span> per line means tens of thousands of DOM nodes on a big diff;
+  // past this cap show the same text as a single text node instead.
+  if (lines.length > MAX_HIGHLIGHT_LINES) { pre.textContent = raw; return; }
   const frag = document.createDocumentFragment();
   for (const line of lines) {
     const span = document.createElement("span");
@@ -2614,6 +2658,7 @@ function showEmpty(ws) {
   setDetailOpen(false);
   COMMITS = [];
   BRANCHES = [];
+  BRANCH_COLOR_CACHE = null;
   $("wdPanel").innerHTML = "";
   $("commitList").innerHTML = "";
   $("legend").innerHTML = "";
@@ -4176,15 +4221,11 @@ async function autoRefreshTick() {
   try {
     // Working tree changes (cheap).
     const ws = await api("workstatus");
-    if (ws.ok) {
-      const before = JSON.stringify(WORKSTATUS ? { branch: WORKSTATUS.branch, counts: WORKSTATUS.counts } : null);
-      const after = JSON.stringify({ branch: ws.branch, counts: ws.counts });
-      if (before !== after) {
-        wdDiffCache.clear();
-        WORKSTATUS = ws;
-        refreshWorkdir();
-        renderStats();
-      }
+    if (ws.ok && workstatusSig(ws) !== WD_SIG) {
+      // Reuse the response we just fetched instead of calling refreshWorkdir(),
+      // which issued a second identical workstatus request (and a second git
+      // process) on every detected change.
+      applyWorkstatus(ws, true);
     }
     // New commits / branch moves: compare a lightweight ref-tip signature.
     // The old code called graph {limit:1, skip:0}, which still ran three git

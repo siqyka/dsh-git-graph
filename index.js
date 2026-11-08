@@ -3,7 +3,7 @@
 //   GET /git-graph/api?op=<op>&repo=<path>[&hash=<sha>]  -> JSON git data
 //   GET /git-graph/index.html                           -> the visualizer page
 // Commands are executed with execFile (no shell), fixed argument lists only.
-import { execFile, execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -254,9 +254,9 @@ function readHeadName(repo) {
 
 /* ===================== self-update ===================== */
 // Checks the GitHub repo for newer tags and can replace this plugin's files
-// from a codeload zip. No API key needed: version lookup uses `git ls-remote
-// --tags`, download uses https://codeload.github.com (zip, extracted by
-// bsdtar which ships with Windows 10+ / macOS / most Linux distros).
+// from a shallow tag clone. No API key needed: version lookup uses
+// `git ls-remote --tags`, download uses `git clone --depth 1 --branch <tag>`
+// so it rides the same proxy / sslBackend / http.version config.
 const UPDATE_REPO = 'siqyka/dsh-git-graph'
 const UPDATE_GH = `https://github.com/${UPDATE_REPO}`
 
@@ -313,19 +313,53 @@ function portOpen(port) {
   })
 }
 
+/* Global git config, read once into a Map instead of one execFileSync per key.
+ * `--list -z` emits `key\nvalue\0`; keys are lower-cased because git config
+ * keys are case-insensitive (`http.sslBackend`). The short TTL means a user who
+ * changes their proxy in git config gets picked up without an app restart, and
+ * concurrent network calls share one in-flight read. */
+const GLOBAL_CFG_TTL = 5 * 60 * 1000
+let GLOBAL_CFG = null
+let GLOBAL_CFG_AT = 0
+let GLOBAL_CFG_PROMISE = null
+function globalGitConfig() {
+  const now = Date.now()
+  if (GLOBAL_CFG && now - GLOBAL_CFG_AT < GLOBAL_CFG_TTL) return Promise.resolve(GLOBAL_CFG)
+  if (GLOBAL_CFG_PROMISE) return GLOBAL_CFG_PROMISE
+  GLOBAL_CFG_PROMISE = new Promise((resolve) => {
+    execFile('git', ['config', '--global', '--list', '-z'], { encoding: 'utf8', windowsHide: true, timeout: 5000 }, (err, stdout) => {
+      const cfg = new Map()
+      for (const rec of String(stdout || '').split('\0')) {
+        if (!rec) continue
+        const nl = rec.indexOf('\n')
+        if (nl < 0) continue
+        cfg.set(rec.slice(0, nl).toLowerCase(), rec.slice(nl + 1))
+      }
+      GLOBAL_CFG = cfg
+      GLOBAL_CFG_AT = Date.now()
+      GLOBAL_CFG_PROMISE = null
+      resolve(cfg)
+    })
+  })
+  return GLOBAL_CFG_PROMISE
+}
+
 /** Resolve a usable proxy for GitHub: global git config wins, then a
- *  listening local proxy port. Returns '' when none found. */
-async function resolveProxy() {
-  const readGlobal = (k) => {
-    try {
-      const out = execFileSync('git', ['config', '--global', '--get', k], { encoding: 'utf8', windowsHide: true })
-      return out.trim()
-    } catch { return '' }
-  }
-  const fromConfig = readGlobal('http.proxy') || readGlobal('https.proxy')
+ *  listening local proxy port. Returns '' when none found.
+ *  All candidate ports are probed concurrently: doing it sequentially cost up
+ *  to 6 × 400ms before every network command when no proxy was running. */
+async function resolveProxy(cfg) {
+  cfg = cfg || await globalGitConfig()
+  const fromConfig = cfg.get('http.proxy') || cfg.get('https.proxy')
   if (fromConfig) return fromConfig
-  for (const port of PROXY_PORTS) {
-    if (await portOpen(port)) return `http://127.0.0.1:${port}`
+  // Start every candidate probe at once, then walk them in PROXY_PORTS order:
+  // that keeps the old priority (first listening port wins, not the fastest to
+  // answer) while collapsing the worst case from 6 × 400ms to one 400ms
+  // timeout, and still returns immediately when the first port is up because
+  // its probe has been running the whole time.
+  const probes = PROXY_PORTS.map((port) => portOpen(port))
+  for (let i = 0; i < probes.length; i++) {
+    if (await probes[i]) return `http://127.0.0.1:${PROXY_PORTS[i]}`
   }
   return ''
 }
@@ -335,30 +369,50 @@ async function resolveProxy() {
  *  schannel often fails against GitHub on CN networks). */
 async function gitNetArgs() {
   const extra = []
-  const readGlobal = (k) => {
-    try {
-      const out = execFileSync('git', ['config', '--global', '--get', k], { encoding: 'utf8', windowsHide: true })
-      return out.trim()
-    } catch { return '' }
-  }
-  const proxy = await resolveProxy()
+  const cfg = await globalGitConfig()
+  const proxy = await resolveProxy(cfg)
   if (proxy) extra.push('-c', 'http.proxy=' + proxy, '-c', 'https.proxy=' + proxy)
-  const backend = readGlobal('http.sslBackend') || 'openssl'
+  const backend = cfg.get('http.sslbackend') || 'openssl'
   extra.push('-c', 'http.sslBackend=' + backend)
-  const ver = readGlobal('http.version') || 'HTTP/1.1'
+  const ver = cfg.get('http.version') || 'HTTP/1.1'
   extra.push('-c', 'http.version=' + ver)
   return extra
 }
 
+/* `checkupdate` runs after every page load. Without a cache that meant a full
+ * `ls-remote` (plus proxy probing) each time; a 10-minute positive TTL and a
+ * 60-second negative TTL keep the common case at zero network calls while
+ * still noticing a release reasonably soon. Concurrent callers share one
+ * in-flight request instead of racing. */
+const UPDATE_TAG_TTL = 10 * 60 * 1000
+const UPDATE_TAG_FAIL_TTL = 60 * 1000
+let latestTagCache = null   // {value, at, ok}
+let latestTagInflight = null
 async function latestTag() {
-  const out = await runGit(here, [...await gitNetArgs(), 'ls-remote', '--tags', UPDATE_GH], MAX_GIT_BUFFER, 60000)
-  const tags = new Set()
-  for (const line of String(out).split('\n')) {
-    const m = line.match(/refs\/tags\/(v?\d+\.\d+(?:\.\d+)?)(\^\{\})?$/)
-    if (m && !m[2]) tags.add(m[1])
+  const now = Date.now()
+  if (latestTagCache) {
+    const age = now - latestTagCache.at
+    if (latestTagCache.ok && age < UPDATE_TAG_TTL) return latestTagCache.value
+    if (!latestTagCache.ok && age < UPDATE_TAG_FAIL_TTL) throw new Error('network-unavailable')
   }
-  if (!tags.size) return ''
-  return [...tags].sort((a, b) => cmpVer(b, a))[0]
+  if (latestTagInflight) return latestTagInflight
+  latestTagInflight = (async () => {
+    try {
+      const out = await runGit(here, [...await gitNetArgs(), 'ls-remote', '--tags', UPDATE_GH], MAX_GIT_BUFFER, 15000)
+      const tags = new Set()
+      for (const line of String(out).split('\n')) {
+        const m = line.match(/refs\/tags\/(v?\d+\.\d+(?:\.\d+)?)(\^\{\})?$/)
+        if (m && !m[2]) tags.add(m[1])
+      }
+      const value = tags.size ? [...tags].sort((a, b) => cmpVer(b, a))[0] : ''
+      latestTagCache = { value, at: Date.now(), ok: true }
+      return value
+    } catch (err) {
+      latestTagCache = { value: '', at: Date.now(), ok: false }
+      throw err
+    }
+  })().finally(() => { latestTagInflight = null })
+  return latestTagInflight
 }
 
 /** Download + extract + swap this plugin's files with the given tag.
@@ -893,6 +947,13 @@ export function apply(ctx, config = {}) {
           // git checkout the update is always suppressed.
           const current = localVersion()
           const managed = (await gitManaged()) ? 'git' : undefined
+          // In a git-managed checkout self-update is disabled anyway, so skip
+          // the network entirely: `latest` is suppressed below and a failed
+          // ls-remote would make this endpoint wait for its timeout.
+          if (managed) {
+            sendJson({ ok: true, current, latest: '', hasUpdate: false, managed })
+            return
+          }
           try {
             const latest = await latestTag()
             const hasUpdate = !managed && latest ? cmpVer(latest, current) > 0 : false
@@ -1100,8 +1161,12 @@ export function apply(ctx, config = {}) {
             // each and return nothing, so they are skipped: clean = 1 spawn.
             const needStaged = statusRecords.some((r) => r.x !== ' ' && r.x !== '?' && r.x !== '!')
             const needUnstaged = statusRecords.some((r) => r.y !== ' ' && r.y !== '?' && r.y !== '!')
-            const stagedNum = needStaged ? await runGit(repo, ['diff', '--cached', '--numstat', '-z']).catch(() => '') : ''
-            const unstagedNum = needUnstaged ? await runGit(repo, ['diff', '--numstat', '-z']).catch(() => '') : ''
+            // Both numstat commands only depend on the index, not on each
+            // other; run them together instead of paying two serial waits.
+            const [stagedNum, unstagedNum] = await Promise.all([
+              needStaged ? runGit(repo, ['diff', '--cached', '--numstat', '-z']).catch(() => '') : Promise.resolve(''),
+              needUnstaged ? runGit(repo, ['diff', '--numstat', '-z']).catch(() => '') : Promise.resolve(''),
+            ])
             const stagedCounts = parseNumstatZ(stagedNum)
             const unstagedCounts = parseNumstatZ(unstagedNum)
             const staged = []
@@ -1212,11 +1277,11 @@ export function apply(ctx, config = {}) {
             const opener = process.platform === 'win32' ? 'explorer'
               : process.platform === 'darwin' ? 'open'
               : 'xdg-open'
-            await runGit(repo, ['rev-parse', '--show-toplevel']).then((root) => {
-              return new Promise((resolvePromise) => {
-                // GUI file managers may exit non-zero even on success; ignore the code.
-                execFile(opener, [root.trim()], { windowsHide: true }, () => resolvePromise())
-              })
+            // The handler already resolved `repo` to a working tree; another
+            // rev-parse just to get the same path back costs a whole git spawn.
+            await new Promise((resolvePromise) => {
+              // GUI file managers may exit non-zero even on success; ignore the code.
+              execFile(opener, [repo], { windowsHide: true }, () => resolvePromise())
             })
             sendJson({ ok: true })
             break
@@ -1255,9 +1320,11 @@ export function apply(ctx, config = {}) {
             // Heuristic commit-message suggestion from the working-tree diff.
             // No external AI call: builds conventional-commit style candidates
             // from file names + add/del counts.
-            const stagedNum = await runGit(repo, ['diff', '--cached', '--numstat', '-z']).catch(() => '')
-            const unstagedNum = await runGit(repo, ['diff', '--numstat', '-z']).catch(() => '')
-            const statusOut = await runGit(repo, ['status', '--porcelain=v1', '-z']).catch(() => '')
+            const [stagedNum, unstagedNum, statusOut] = await Promise.all([
+              runGit(repo, ['diff', '--cached', '--numstat', '-z']).catch(() => ''),
+              runGit(repo, ['diff', '--numstat', '-z']).catch(() => ''),
+              runGit(repo, ['status', '--porcelain=v1', '-z']).catch(() => ''),
+            ])
             const stagedCounts = parseNumstatZ(stagedNum)
             const unstagedCounts = parseNumstatZ(unstagedNum)
             const untracked = []
@@ -1360,11 +1427,10 @@ export function apply(ctx, config = {}) {
                   // Add files to .gitignore; tracked files are untracked first
                   // (git rm --cached keeps them on disk).
                   if (!files.length) throw new Error('missing-file')
-                  const tracked = []
-                  for (const f of files) {
-                    const out = await runGit(repo, ['ls-files', '--error-unmatch', '--', f]).catch(() => '')
-                    if (out.trim()) tracked.push(f)
-                  }
+                  // One `ls-files` for the whole batch instead of one process
+                  // per file; -z keeps paths with spaces/newlines intact.
+                  const trackedOut = await runGit(repo, ['ls-files', '-z', '--', ...files]).catch(() => '')
+                  const tracked = [...new Set(trackedOut.split('\0').filter(Boolean))]
                   if (tracked.length) {
                     await runGit(repo, ['rm', '--cached', '--', ...tracked])
                   }
