@@ -71,6 +71,21 @@ dsh plugin --profile web add @shiqyka/dsh-git-graph
 - **Auto refresh**: while visible, a 5-second probe updates the stats and list; workspace changes are followed every 3 seconds.
 - **Auto-update**: silently checks the latest GitHub tag and swaps the files in one click (backup first, automatic rollback on failure), applied on restart. When mounted via `link:` the button hides and suggests `git pull` instead — files owned by git are never rewritten.
 
+### 🖥 Remote (SSH)
+
+When the session workspace is `ssh://<host>/<path>`, every feature above runs git **on the remote host** instead — no extra configuration, it activates automatically once [`@shiqyka/dsh-ssh-workspace`](https://www.npmjs.com/package/@shiqyka/dsh-ssh-workspace) is installed.
+
+| Feature | Remote |
+| --- | --- |
+| Graph / commit detail / file history / diff | ✅ Byte-for-byte identical to local |
+| Working tree (stage / discard / commit) | ✅ Commits are authored with the **remote** `user.name` / `user.email` |
+| Branches, tags, checkout, delete branch | ✅ |
+| Fetch / push | ✅ using the **remote host's** credentials and network — your local proxy and SSH keys are not involved, so a failure there is expected when the remote has no credentials |
+| Open folder / reveal in file manager / ignore files | ⛔ Local-filesystem only; buttons grey out and explain why |
+| Self-update | ⛔ Same reason — run it locally |
+
+Without `@shiqyka/dsh-ssh-workspace` nothing breaks: the page shows an empty state naming what is missing, and everything else keeps working.
+
 ## Usage
 
 | Action | Description |
@@ -102,7 +117,8 @@ dsh-git-graph/
 ├── web/app.js        # Page logic (external script)
 ├── package.json      # Plugin manifest (dsh.client + dsh.bundle.patch + engines.dsh)
 ├── cordis.patch.yml  # Profile mount point
-├── scripts/          # check-compat.mjs / publish.mjs / compat-isolated-test.ps1
+├── scripts/          # release-chain check-*.mjs (lifecycle / remote / remote-live / remote-ui / degrade / compat)
+│                     # + publish.mjs / compat-isolated-test.ps1
 └── docs/             # Compatibility and security-audit evidence
 ```
 

@@ -15,7 +15,8 @@
     "dsh-plugin",
     "git",
     "graph",
-    "visualization"
+    "visualization",
+    "ssh"
   ],
   "files": [
     "index.js",

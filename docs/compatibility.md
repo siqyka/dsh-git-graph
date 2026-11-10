@@ -80,6 +80,7 @@ pwsh -File scripts/compat-isolated-test.ps1 -Versions 0.2.0-rc.1  # 只测一个
 | 浏览器端 `/api/session/list` Remote（内部 RPC，`namespace/method` + `args._request`） | 用于解析当前会话工作区 cwd；官方 UI 同款通道但非发布契约 | v0.13 起：① 首选 iframe `?sid=`（官方注入）精确匹配；② RPC 失败 `console.warn` 且回落「最近活跃会话」启发式；③ 全部失败 → 空态 + 手动打开，不影响使用 |
 | 自更新（`git ls-remote --tags` + codeload zip + bsdtar） | 作者自有渠道，绕过商城更新流 | 失败自动回滚备份；商城来源安装不受影响 |
 | 服务端 `execFile` 调用系统 git | 外部进程能力 | 固定参数数组、无 shell；只读路径白名单 |
+| 宿主 `subprocess` 服务（`ctx.get('subprocess').spawn`） | 兄弟插件 `@shiqyka/dsh-ssh-workspace` 打的补丁，非官方公开面 | v0.26.3 起：仅在会话工作区为 `ssh://` 时使用；服务不存在时**整条远端分支不可达**，本地行为逐字段不变（`scripts/check-degrade.mjs` 断言） |
 
 ## 4. 能力披露（DSH STORE 权限信号）
 
@@ -113,3 +114,8 @@ pwsh -File scripts/compat-isolated-test.ps1 -Versions 0.2.0-rc.1  # 只测一个
   移除自建 `dsh.compatibility.dshReleases` 与 `dsh.plugin.json`；自更新按挂载形态降级
   （git 工作区挂载 → `git pull` 提示）；锚点版本 0.1.7-rc.2 / 0.2.0-rc.1 隔离实测通过；
   准备 npm（scope）+ GitHub topic 双通道发布
+- v0.26.3：支持 `ssh://` 远程工作区。`runGit` 成为唯一分叉点，读 op 与全部 `gitop` 在远端返回
+  与本地逐字段一致的 JSON；`reveal` / `listdir` / `addrepo` / `findrepos` / `gitop ignore`
+  五处本机能力显式拒绝并给出原因；远端写操作在只读会话下另有门禁。依赖兄弟插件
+  `@shiqyka/dsh-ssh-workspace`，未安装时降级为本机行为不变（`check-degrade.mjs` 逐字段对账
+  114 条断言）。发布链新增 remote / remote-live / remote-ui / degrade 四项检查。

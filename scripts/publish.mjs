@@ -117,6 +117,34 @@ run(process.execPath, ['--check', join('web', 'app.js')])
 /* 2b) 生命周期检查：apply() 装的路由必须能被卸载（防 duplicate prefix route 复发） */
 run(process.execPath, ['scripts/check-lifecycle.mjs'])
 
+/* 2c) 远端分流检查：runGit 的 ssh:// 分支必须符合 ssh-workspace 的 spawn/done
+ * 契约。M2 起读路径的 op handler 已经接线，本地路径的回归由 M2 的普通套件
+ * 覆盖；这条仍然保留，因为它钉的是「spec 形状」和「断连不重放写操作」——
+ * 两者都只有在真主机上出事时才会被发现，而 mock 是唯一能在无主机环境下
+ * 持续验证它们的手段。 */
+run(process.execPath, ['scripts/check-remote.mjs'])
+
+/* 2d) 远端真机验收。未设置 DSH_GG_TEST_ALIAS 时自报 SKIP 并退出 0，所以
+ * 没有主机的机器上这一条不阻塞发布；设置了的机器上它会逐字段对账插件
+ * 输出与同一台机器上 git 的原始输出。 */
+run(process.execPath, ['scripts/check-remote-live.mjs'])
+
+/* 2e) 远端客户端界面验收。用真实 Chrome（CDP，零依赖）打开插件页面，把 api()
+ * 与 resolveSessionWs() 换成固定响应，驱动真实的 load() 后断言 DOM：远端时
+ * 打开文件夹 / reveal / 忽略 三处置灰、徽标与状态栏提示、切回本地全部复原。
+ *
+ * 这一步挡的是「静态 grep 查不出、只有真浏览器才暴露」的回归：CSP 会静默丢掉
+ * style 属性，disabled 按钮不派发 click，徽标一出现就可能把顶栏三区网格顶歪。
+ * 没有 Chrome、或本机没跑 dsh web 时自报 SKIP 并退出 0（发布机可能就是这种
+ * 形态），所以它不会把发布卡死在一台没装浏览器的机器上。 */
+run(process.execPath, ['scripts/check-remote-ui.mjs'])
+
+/* 2f) 降级回归：没有 ssh-workspace 时，本地行为必须与基线版本逐字段一致。
+ * 远端分叉写错时最容易发生的事故是**本地悄悄被改掉**（`-C` 被误删、白名单多
+ * 认一类路径、路径守卫恒假、`repos` 少一个字段），而那些都能让远端检查全绿。
+ * 基线 tag 不存在时自报 SKIP 并退出 0。 */
+run(process.execPath, ['scripts/check-degrade.mjs'])
+
 /* 3) 兼容窗口覆盖检查 */
 run(process.execPath, ['scripts/check-compat.mjs'])
 

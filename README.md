@@ -71,6 +71,21 @@ dsh plugin --profile web add @shiqyka/dsh-git-graph
 - **自动刷新**：页面可见时每 5 秒探测改动，自动更新统计与列表；切工作区每 3 秒跟随一次。
 - **自动更新**：静默检查 GitHub 最新 tag，一键下载并替换（自动备份、失败回滚），重启生效。以 `link:` 挂载时隐藏该按钮，改为提示 `git pull`，绝不改写 git 管理的文件。
 
+### 🖥 连远端（SSH）
+
+会话工作区是 `ssh://<主机>/<路径>` 时，上面这些功能全部改为在**远端主机上**执行 git——不需要额外配置，装了 [`@shiqyka/dsh-ssh-workspace`](https://www.npmjs.com/package/@shiqyka/dsh-ssh-workspace) 就自动生效。
+
+| 功能 | 远端 |
+| --- | --- |
+| 图谱 / 提交详情 / 文件历史 / diff | ✅ 与本地逐字段一致 |
+| 未提交改动（暂存 / 还原 / 提交） | ✅ 提交作者取**远端**的 `user.name` / `user.email` |
+| 分支、标签、切换、删除分支 | ✅ |
+| 拉取 / 推送 | ✅ 但用**远端主机的凭据与网络**——本机的代理与 SSH key 不参与，远端没配凭据时失败属正常 |
+| 打开文件夹 / 在文件管理器中打开 / 忽略文件 | ⛔ 都是本机文件系统能力，按钮会置灰并说明原因 |
+| 自动更新 | ⛔ 同上，需在本机操作 |
+
+未安装 `@shiqyka/dsh-ssh-workspace` 时不会报错：页面停在空态并说明缺什么，其余功能不受影响。
+
 ## 使用速查
 
 | 操作 | 说明 |
@@ -102,7 +117,8 @@ dsh-git-graph/
 ├── web/app.js        # 页面逻辑（外部脚本）
 ├── package.json      # 插件清单（dsh.client + dsh.bundle.patch + engines.dsh）
 ├── cordis.patch.yml  # profile 挂载点
-├── scripts/          # check-compat.mjs / publish.mjs / compat-isolated-test.ps1
+├── scripts/          # 发布链 check-*.mjs（lifecycle / remote / remote-live / remote-ui / degrade / compat）
+│                     # + publish.mjs / compat-isolated-test.ps1
 └── docs/             # 兼容性与安全审计证据
 ```
 
