@@ -208,6 +208,20 @@ header {
 .hd-center { justify-content: center; }
 .hd-right { justify-content: flex-end; }
 header .title { font-weight: 700; font-size: 14px; letter-spacing: .2px; white-space: nowrap; flex: none; }
+/* "远程 · <host>" chip, shown only when the repo lives on another machine.
+   flex:none + max-width keeps its appearance from re-flowing the header: the
+   three-track grid centres .hd-center on the header regardless of how wide
+   .hd-left gets, and the cap stops a long alias from spilling into the centre
+   group. Hidden via .gg-none, never via a style attribute (CSP drops those). */
+.rd-remote {
+  flex: none; max-width: 16ch;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 1px 7px; border-radius: 5px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: .2px;
+  color: var(--accent); background: rgba(88,166,255,.14);
+  border: 1px solid rgba(88,166,255,.38);
+  cursor: default;
+}
 /* Icon-only control: a 30px box around a 16px stroke glyph. The verb lives in
    the tooltip and the aria-label, so dropping the text loses nothing for a
    hovering mouse or a screen reader — it only quiets the row. */
@@ -786,6 +800,14 @@ body.gg-col-resize, body.gg-col-resize * { cursor: col-resize !important; user-s
 }
 #wdPanel .wd-batch button:hover { border-color: var(--text3); background: var(--bg4); }
 #wdPanel .wd-batch button.danger:hover { color: var(--red); border-color: var(--red); }
+/* Disabled batch actions (remote workspace: "ignore") stay legible enough to
+   read, but must not light up on hover — a hover highlight is the main signal
+   that a control is live. The reason lives in the button's title. */
+#wdPanel .wd-batch button[disabled] { opacity: .45; cursor: default; }
+#wdPanel .wd-batch button[disabled]:hover {
+  border-color: var(--border); background: var(--bg3); color: var(--text);
+}
+#wdPanel .wd-batch button[disabled].danger:hover { color: var(--text); border-color: var(--border); }
 #wdPanel .wd-head {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 12px 2px; font-size: 11px; font-weight: 700;
@@ -1042,6 +1064,7 @@ pre.diff .df-neg, #wdPanel pre .df-neg { background: rgba(248,81,73,.08); color:
 #statusLine .dirty { color: var(--orange); cursor: pointer; }
 #statusLine .dirty:hover { text-decoration: underline; }
 #statusLine .clean { color: var(--green); }
+#statusLine .remote-note { color: var(--accent); font-size: 11.5px; cursor: default; }
 /* plugin version badge pinned to the right end of the status bar */
 #statusLine .gg-version {
   margin-left: auto; flex: none;
@@ -1105,6 +1128,13 @@ pre.diff .df-neg, #wdPanel pre .df-neg { background: rgba(248,81,73,.08); color:
   cursor: pointer; font-size: 12.5px;
 }
 .es-open:hover { background: rgba(88,166,255,.2); }
+/* A disabled empty-state button must still explain itself via title. Keep the
+   accent border off: at full border-colour it still reads as the live CTA. */
+.es-open[disabled] {
+  opacity: .5; cursor: default;
+  border-color: var(--text3); color: var(--text2); background: transparent;
+}
+.es-open[disabled]:hover { background: transparent; }
 .es-open.es-scan { border-style: dashed; margin-left: 8px; }
 .es-scan-list { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; max-width: 480px; max-height: 180px; overflow: auto; }
 .es-scan-item {

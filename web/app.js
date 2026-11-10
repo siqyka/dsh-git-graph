@@ -1,6 +1,46 @@
 "use strict";
 /* ===================== state ===================== */
 let REPO = null;
+/* ---- remote (ssh://) repositories -------------------------------------------
+ * The graph can show a repository that lives on another machine: the server
+ * runs git through the ssh-workspace subprocess bridge, so every read op and
+ * every gitop action answers with the same JSON as a local repo. What cannot
+ * work over there are the ops that browse THIS machine's disk or drive its
+ * file manager — the server refuses those with
+ * `{ok:false, error:'unsupported-remote', hint}`. Leaving their buttons live
+ * would mean the only possible outcome is an error toast, so the client
+ * disables them and says why in the tooltip instead.
+ *
+ * WS_REMOTE mirrors the server's `wsRemote` flag and exists for the window
+ * where REPO is still null: the empty screen renders before any repo is
+ * chosen, so there is no repository string to inspect yet. It drives the
+ * *session-level* guards only (the folder picker); the "远程" chip in the
+ * header follows the repository actually on screen, so a remote session that
+ * is displaying a local repo keeps a clean header. */
+let WS_REMOTE = false;
+/* The server's reason for a remote workspace having no git root: `{reason,
+ * bridge, git, detail}` or null (local workspace, or an older server that does
+ * not send it). `reason` is one of 'bridge-missing' | 'not-a-repo' |
+ * 'path-unusable' | 'git-missing' | 'unreachable' | 'unknown' | 'ok'. */
+let WS_PROBE = null;
+/* Whether the empty screen is the one on display. The remote chip annotates a
+ * repository path; the empty screen has none (#repoLabel shows an em dash), so
+ * the chip is suppressed there. Kept as state rather than a DOM read so the
+ * badge logic does not depend on element visibility. */
+let EMPTY_SHOWN = false;
+/** True for a repo string that lives on another host. */
+function isRemoteRepo(r) { return typeof r === "string" && r.startsWith("ssh://"); }
+/** The host alias of an `ssh://alias/path` repo ("" when local). */
+function remoteAliasOf(r) {
+  if (!isRemoteRepo(r)) return "";
+  const rest = r.slice("ssh://".length);
+  const i = rest.indexOf("/");
+  return i < 0 ? rest : rest.slice(0, i);
+}
+/* Whether the repo on screen is remote. Deliberately reads REPO only: a remote
+ * *session* may still be showing a configured local repo, and the guards must
+ * follow the repository being displayed, not the session it was opened from. */
+function remoteActive() { return isRemoteRepo(REPO); }
 let COMMITS = [];          // [{hash, parents[], author, email, date, subject, refs[]}]
 let BRANCHES = [];         // [{refname, kind, name, sha, head}]
 let WORKSTATUS = null;     // {branch, staged[], unstaged[], untracked[], counts}
@@ -1573,7 +1613,7 @@ async function selectCommit(hash, scroll = false) {
     let diffFailed = false;
     const diffP = knownRoot ? null : api("diff", { hash }).catch(() => { diffFailed = true; return null; });
     const info = await api("show", { hash });
-    if (!info.ok) { d.textContent = "加载失败: " + (info.error || "?"); return; }
+    if (!info.ok) { d.textContent = "加载失败: " + opErrorText(info); return; }
     const diff = diffP && info.parents.length ? await diffP : null;
     // don't cache failures; a transient git error should be retryable. A root
     // commit's null diff is valid, so that case is always cacheable.
@@ -1787,7 +1827,7 @@ async function showFileDiff(hash, file, rowEl) {
     if (res.ok) {
       highlightDiff(pre, res.diff || "（无差异）");
     } else {
-      pre.textContent = "加载失败: " + (res.error || "?");
+      pre.textContent = "加载失败: " + opErrorText(res);
     }
     block.appendChild(pre);
     d.appendChild(block);
@@ -1830,7 +1870,10 @@ async function showFileHist(file, rowEl) {
     if (!res.ok || !res.commits.length) {
       const e = document.createElement("div");
       e.className = "empty";
-      e.textContent = res.error || "（该文件没有提交历史）";
+      // Two different empties: a real "no history for this file" and a failed
+      // request. `res.error` alone cannot tell them apart, because a successful
+      // response has no `error` field at all.
+      e.textContent = res.ok ? "（该文件没有提交历史）" : opErrorText(res);
       list.appendChild(e);
     } else {
       for (const c of res.commits) {
@@ -2208,7 +2251,7 @@ async function loadWdFile(item, staged, pre) {
     let text = "";
     let isDiff = false;
     if (!res.ok) {
-      text = "加载失败: " + (res.error || "?");
+      text = "加载失败: " + opErrorText(res);
     } else if (res.isDir) {
       text = "（未跟踪目录）";
     } else if (res.binary) {
@@ -2337,7 +2380,7 @@ function commitDialog(paths) {
       aiTip.textContent = "分析中…";
       try {
         const res = await api("suggestmsg");
-        if (!res.ok) { aiTip.textContent = "生成失败: " + (res.error || "?"); return; }
+        if (!res.ok) { aiTip.textContent = "生成失败: " + opErrorText(res); return; }
         if (!res.candidates || !res.candidates.length) { aiTip.textContent = "当前没有可提交的改动"; return; }
         ta.value = res.candidates[0];
         ta.focus();
@@ -2406,11 +2449,23 @@ function updateBatchBar() {
     if (danger) b.className = "danger";
     b.addEventListener("click", fn);
     batch.appendChild(b);
+    return b;
   };
   mk("暂存选中", () => batchOp("stage", selected, ["unstaged", "untracked"]));
   mk("取消暂存选中", () => batchOp("unstage", selected, ["staged"]));
   mk("还原选中", () => discardConfirm(selected.map((s) => s.path)), true);
-  mk("忽略选中", () => ignoreConfirm(selected.map((s) => s.path)), true);
+  {
+    /* `gitop ignore` appends to .gitignore, which the remote bridge cannot do
+     * (it carries only git and ripgrep). Disabled rather than hidden: the
+     * control's absence would read as "this build is missing a feature", while
+     * a disabled button with a tooltip says exactly why and for how long. */
+    const ign = mk("忽略选中", () => ignoreConfirm(selected.map((s) => s.path)), true);
+    if (remoteActive()) {
+      ign.disabled = true;
+      ign.title = TITLE_IGNORE_REMOTE;
+      ign.setAttribute("aria-disabled", "true");
+    }
+  }
   mk("提交选中", () => commitSelected(selected));
   const clear = document.createElement("button");
   clear.type = "button";
@@ -2472,7 +2527,7 @@ $("commitDlg").addEventListener("click", (ev) => { if (ev.target === $("commitDl
 async function runGitOp(action, params, needGraph) {
   try {
     const res = await api("gitop", { action, ...params });
-    if (!res.ok) { alert("操作失败: " + (res.error || "?")); return false; }
+    if (!res.ok) { alert("操作失败: " + opErrorText(res)); return false; }
     WD_SELECT.clear();
     wdDiffCache.clear();
     clearResponseCache();   // a commit/tag/branch write can change what details show
@@ -2563,6 +2618,17 @@ function renderStatusLine() {
     clean.className = "clean";
     clean.textContent = "✓ 工作区干净";
     el.appendChild(clean);
+  }
+  /* Remote marker. Not decoration: fetch/push here run on the other machine,
+   * with that machine's proxy settings and SSH keys — not this one's. Without
+   * saying so, a failed push looks like a local credential problem. */
+  if (remoteActive()) {
+    const alias = remoteAliasOf(REPO);
+    const rm = document.createElement("span");
+    rm.className = "remote-note";
+    rm.textContent = "· 远端" + (alias ? " " + alias : "") + " · 网络与凭据使用远端主机";
+    rm.title = "git 命令通过 SSH 在远端主机执行；本机的代理与 SSH key 不参与";
+    el.appendChild(rm);
   }
   // version badge pinned to the right end of the status bar
   const ver = document.createElement("span");
@@ -2667,17 +2733,195 @@ function showEmpty(ws) {
   $("repoLabel").title = "";
   $("emptyPath").textContent = ws || "";
   $("emptyPath").title = ws || "";
-  // 工作区路径已知时提供「在当前对话目录下查找 Git 仓库」一键扫描
-  const scanBtn = $("btnScanDir");
-  scanBtn.classList.toggle("gg-none", !ws);
-  scanBtn.disabled = false;
+  // 工作区路径已知时提供「在当前对话目录下查找 Git 仓库」一键扫描。
+  // A remote workspace has no local disk to scan, so applyRemoteUi() hides this
+  // button outright there instead of letting it offer a wasted round trip.
   $("scanResults").innerHTML = "";
+  /* The empty screen shows no repository at all (#repoLabel becomes an em
+     dash), so the remote chip goes with it. The class flip has to happen
+     BEFORE applyRemoteUi(), which reads the empty state to decide. */
+  EMPTY_SHOWN = true;
+  $("emptyState").classList.remove("hidden");
+  applyRemoteUi();
   $("esTitle").textContent = "当前对话区域不是 Git 仓库";
   $("esSub").textContent = "该对话的工作区没有 git 仓库。可以点击下方按钮浏览并打开其他文件夹的 Git 仓库。";
-  $("emptyState").classList.remove("hidden");
 }
 function hideEmpty() {
+  EMPTY_SHOWN = false;
   $("emptyState").classList.add("hidden");
+}
+
+/* ---- remote guards ---------------------------------------------------------
+ * Two different scopes, and they are not interchangeable:
+ *
+ *  - The folder picker (open-dir buttons, the empty screen's scan button) is
+ *    refused by the server whenever the SESSION workspace is remote
+ *    (`sessionIsRemote()` keys off the last `repos` call), because it walks
+ *    THIS machine's disk. It does not matter which repo happens to be on
+ *    screen — a remote session cannot add a local folder at all.
+ *  - `reveal` and `gitop ignore` are refused only when the REPO ON SCREEN is
+ *    remote. A remote session showing a configured local repo can still reveal
+ *    that local folder, and must still be able to edit its .gitignore.
+ *
+ * Getting these backwards in either direction produces a button that either
+ * lies (enabled, always errors) or over-refuses (disabled for something the
+ * server would have allowed). */
+const TITLE_OPEN_DIR_REMOTE = "远端工作区不支持浏览本机目录（仓库在另一台机器上）";
+const TITLE_SCAN_REMOTE = "远端工作区不支持扫描本机磁盘";
+const TITLE_IGNORE_REMOTE = "远端工作区暂不支持修改 .gitignore（桥接只运载 git 与 ripgrep，没有写文件能力）";
+/* Original tooltips, captured before the first override so a switch back to a
+ * local workspace restores the button exactly rather than to a hardcoded copy
+ * that would drift from index.html. */
+const ORIG_TITLES = new Map();
+function origTitleOf(el) {
+  if (!ORIG_TITLES.has(el.id)) ORIG_TITLES.set(el.id, el.title);
+  return ORIG_TITLES.get(el.id);
+}
+/** The folder picker is unusable for the whole session, not just this repo. */
+function pickerBlocked() { return WS_REMOTE || remoteActive(); }
+
+/** Apply every remote-aware affordance: disabled pickers, repository badge.
+ *  Idempotent and cheap — safe to call on every load / repo switch. */
+function applyRemoteUi() {
+  const blocked = pickerBlocked();
+  for (const id of ["btnOpenDir", "btnOpenDirEmpty"]) {
+    const b = $(id);
+    if (!b) continue;
+    /* Capture before overwriting, in both branches. Reading the original only
+       on the restore path looks equivalent but is not: a session that starts in
+       a remote workspace runs this while blocked, so the first capture would
+       happen later and pick up the remote tooltip as the "original" — the text
+       then sticks even after switching to a local repo. */
+    const orig = origTitleOf(b);
+    b.disabled = blocked;
+    b.title = blocked ? TITLE_OPEN_DIR_REMOTE : orig;
+    if (blocked) b.setAttribute("aria-disabled", "true");
+    else b.removeAttribute("aria-disabled");
+  }
+  const scan = $("btnScanDir");
+  if (scan) {
+    const origScan = origTitleOf(scan);
+    /* Scanning is a local-disk feature too. Hiding it is better than disabling:
+       in a remote workspace there is no local counterpart to find, so the
+       button would be a permanently dead control in the empty screen. */
+    if (blocked) scan.classList.add("gg-none");
+    else scan.classList.toggle("gg-none", !SESSION_WS);
+    scan.title = blocked ? TITLE_SCAN_REMOTE : origScan;
+    /* showEmpty() used to reset this: a failed scan leaves the button disabled,
+     * and the next empty screen must not inherit that. */
+    if (!blocked) scan.disabled = false;
+  }
+  renderRemoteBadge();
+}
+
+/** `远程 · <alias>` chip in the header, next to the repository path. */
+function renderRemoteBadge() {
+  const badge = $("remoteBadge");
+  if (!badge) return;
+  /* The chip annotates the repository path next to it, so it must follow REPO
+   * alone. Keying it off the session (WS_REMOTE) put "远程 · qiyk" in front of
+   * a local path whenever a remote session happened to display a configured
+   * local repo: the label and the chip contradicted each other. The empty
+   * screen has no repository at all (#repoLabel is an em dash), so it shows no
+   * chip either — the session-level explanation lives in the picker tooltips. */
+  const repo = remoteActive() && !EMPTY_SHOWN;
+  if (!repo) {
+    badge.classList.add("gg-none");
+    badge.textContent = "";
+    badge.title = "";
+    return;
+  }
+  const alias = remoteAliasOf(REPO);
+  /* textContent, never innerHTML: the alias comes from the DSH host config and
+   * is therefore external input. */
+  badge.textContent = alias ? "远程 · " + alias : "远程";
+  badge.title = "这是 SSH 远程主机上的仓库，git 命令在远端执行";
+  badge.classList.remove("gg-none");
+}
+
+/** Error text for a failed API response.
+ *  The server sends `hint` for refusals that have a reason worth reading
+ *  (`unsupported-remote`, read-only sessions). Dropping it leaves the user with
+ *  a bare code and no way forward, which is exactly what the hint exists to
+ *  prevent. */
+function opErrorText(res) {
+  const code = (res && res.error) || "?";
+  const hint = res && typeof res.hint === "string" ? res.hint : "";
+  return hint ? code + " —— " + hint : code;
+}
+
+/* Empty-screen copy for a remote workspace that produced no git root.
+ *
+ * The server's `wsProbe` names one of five causes, and they call for completely
+ * different advice: a missing bridge plugin is an install problem, an
+ * unreachable host is a network/credentials problem, a host without git is a
+ * package manager problem, and a folder that is simply not a repository is ...
+ * a folder that is not a repository. This screen used to collapse every one of
+ * them into "install @shiqyka/dsh-ssh-workspace", which sends the most common
+ * case after the single thing that is already working — and the folder "one
+ * level above the repo" is exactly the setup a user arrives with after pointing
+ * a workspace at a project root.
+ *
+ * `detail` is the remote's own first stderr line, kept verbatim only for the
+ * causes where the user has to compare it against their own setup. */
+function remoteEmptyText(probe) {
+  const alias = remoteAliasOf(SESSION_WS || "");
+  const host = alias ? "远端主机 " + alias : "远端主机";
+  const p = probe || {};
+  const detail = typeof p.detail === "string" ? p.detail : "";
+  const tail = detail ? "（" + detail + "）" : "";
+  if (p.bridge === false) {
+    return {
+      title: "远端工作区无法读取 Git 仓库",
+      sub: "这个工作区在另一台机器上，需要通过 SSH 执行 git，而当前的转发通道不可用。" +
+        "请确认 @shiqyka/dsh-ssh-workspace 已安装并在本 profile 中启用，然后重新加载页面。",
+    };
+  }
+  if (p.reason === "unreachable") {
+    return {
+      title: "无法连接" + host,
+      sub: "工作区在那台机器上，但 SSH 连接没有建立" + tail +
+        "。请确认主机别名、网络连通性与密钥都可用，然后重新加载。",
+    };
+  }
+  if (p.reason === "git-missing") {
+    return {
+      title: host + "上没有 git",
+      sub: "SSH 通道是通的，但那台机器上找不到 git 命令，无法读取仓库" + tail +
+        "。请在远端主机上安装 git 后重新加载。",
+    };
+  }
+  if (p.reason === "path-unusable") {
+    return {
+      title: "远端目录无法进入",
+      sub: "那台机器无法进入这个目录" + tail +
+        "。请确认目录在远端仍然存在，且当前用户有读取权限。",
+    };
+  }
+  if (p.reason === "not-a-repo") {
+    /* No `detail` here on purpose: the remote's stderr line says exactly what
+     * the title already said, and this is the longest sentence on the screen
+     * (`.es-sub` is capped at 420px). The useful half is the way out — remote
+     * discovery only walks upward, so a repository one level down is invisible
+     * no matter how many times the user reloads. */
+    return {
+      title: "远端目录不是 Git 仓库",
+      sub: "已在" + host + "上从该目录逐级向上查找，没有找到 Git 仓库。" +
+        "远端无法像本地那样浏览或扫描子目录，所以如果仓库在这个目录的子目录里，" +
+        "请把那个子目录作为会话工作区打开。",
+    };
+  }
+  /* The bridge is known to work (that check is `p.bridge === false` above, the
+   * only reliable "plugin missing" signal). Whatever is left — an unclassified
+   * remote failure, or a page served by a host that predates `wsProbe` — must
+   * therefore NOT send the user off to re-install a plugin that is already
+   * running. That is the exact mistake this function was written to undo, so
+   * it must not survive as a fallback. Name the ambiguity instead. */
+  return {
+    title: "远端工作区没有可读的 Git 仓库",
+    sub: "已在" + host + "上从该目录逐级向上查找，没有找到 Git 仓库" + tail +
+      "。如果这个目录确实不是仓库，请把仓库所在的目录（或它的子目录）作为会话工作区打开。",
+  };
 }
 
 /* "Last repo picked" memory is scoped to the session's working copy.
@@ -2718,7 +2962,28 @@ async function load(wsOverride) {
     // 重新注册用户通过「打开文件夹」添加过的仓库（服务端内存态重启后重置）
     const saved = ADDED_REPOS.filter(Boolean);
     const repos = await api("repos", Object.assign({}, ws ? { ws } : {}, saved.length ? { add: saved } : {}));
+    /* `wsRemote` is the server's own answer to "is this session's workspace on
+       another host". It is authoritative and available even when no repo was
+       found, which is exactly the state the empty screen renders in. */
+    WS_REMOTE = !!(repos && repos.wsRemote);
+    /* The server's explanation for a missing remote git root. Absent on older
+     * hosts and null for local workspaces, which is why every reader treats it
+     * as optional rather than as a flag. */
+    WS_PROBE = (repos && repos.wsProbe) || null;
+    applyRemoteUi();
     if (!repos.ok || !repos.repos.length) {
+      /* A remote workspace with no git root has five different causes and the
+       * advice differs for each; `remoteEmptyText` names the one the server
+       * actually observed. Assuming "the bridge plugin is missing" (the old
+       * copy) blamed the one thing that is usually fine, and sent the user away
+       * from the directory they had just pointed at. */
+      if (WS_REMOTE) {
+        showEmpty(SESSION_WS || "");
+        const t = remoteEmptyText(WS_PROBE);
+        $("esTitle").textContent = t.title;
+        $("esSub").textContent = t.sub;
+        return;
+      }
       // 没有任何可用仓库：显示空态并引导用「打开文件夹」添加
       showEmpty(SESSION_WS || "");
       $("esTitle").textContent = "尚未添加 Git 仓库";
@@ -2728,6 +2993,14 @@ async function load(wsOverride) {
     // 当前对话在非 git 工作区：没有用户主动添加的仓库时显示空态（不回落配置仓库）
     if (SESSION_WS && !repos.wsIsGit && !saved.length) {
       showEmpty(SESSION_WS);
+      if (WS_REMOTE) {
+        /* Same missing-root situation reached through the repo list (a
+         * configured or added local repo makes `repos` non-empty), so the copy
+         * comes from the same place instead of a second, drifting variant. */
+        const t = remoteEmptyText(WS_PROBE);
+        $("esTitle").textContent = t.title;
+        $("esSub").textContent = t.sub;
+      }
       return;
     }
     // 当前仓库：上次选择的 > 会话工作区根 > 用户添加的第一个 > 服务端默认
@@ -2747,6 +3020,10 @@ async function load(wsOverride) {
     REPO = current;
     $("repoLabel").textContent = REPO;
     $("repoLabel").title = REPO;
+    /* Disabled state and the badge follow the repository that ended up on
+       screen, which is only known here — after the repo list has been resolved
+       and the remembered pick applied. */
+    applyRemoteUi();
     // repo switcher (hidden when only one repo); show the folder name, full path in title
     const sw = $("repoSwitch");
     REPO_LIST = available;
@@ -2772,7 +3049,11 @@ async function load(wsOverride) {
       $("loading").classList.add("hidden");
       showEmpty(SESSION_WS || "");
       $("esTitle").textContent = "当前仓库不可用";
-      $("esSub").textContent = "无法读取仓库：" + (graph.error || "?") + "。可以点击下方按钮（或顶部「📂 打开」）打开其他文件夹的 Git 仓库：";
+      /* The usual way out is "open another folder", which a remote session
+       * cannot do — offering it there would be a dead end. */
+      $("esSub").textContent = pickerBlocked()
+        ? "无法读取仓库：" + opErrorText(graph) + "。远端工作区无法改用本机的其他文件夹；请确认远端主机上的仓库仍然存在且可读。"
+        : "无法读取仓库：" + opErrorText(graph) + "。可以点击下方按钮（或顶部「📂 打开」）打开其他文件夹的 Git 仓库：";
       return;
     }
     COMMITS = graph.commits;
@@ -2803,7 +3084,11 @@ async function load(wsOverride) {
     renderStats();
     refreshWorkdir();
     if (COMMITS.length) {
-      setTimeout(() => scrollToNode(COMMITS[0].hash), 120);
+      /* Re-checked inside the timer, not just at schedule time: a workspace
+       * switch, a refresh, or a repo becoming unavailable within these 120 ms
+       * runs showEmpty(), which clears COMMITS — the deferred call would then
+       * throw on COMMITS[0].hash and abort whatever follows it. */
+      setTimeout(() => { if (COMMITS.length) scrollToNode(COMMITS[0].hash); }, 120);
     }
     // silent update check after the graph is usable
     setTimeout(() => checkForUpdate(true), 800);
@@ -2834,7 +3119,7 @@ async function browseDir(path) {
     if (!res || !res.ok) {
       PICK_ROOT = null;
       PICK_PARENT = null;
-      list.appendChild(pickCell("加载失败：" + ((res && res.error) || "?")));
+      list.appendChild(pickCell("加载失败：" + opErrorText(res)));
       $("pdHint").textContent = "";
       updatePickOpen();
       return;
@@ -2920,7 +3205,7 @@ async function openPickPath() {
   btn.textContent = "打开中…";
   try {
     const res = await api("addrepo", { path: PICK_PATH });
-    if (!res.ok) { alert("无法添加该仓库：" + (res.error || "?")); return; }
+    if (!res.ok) { alert("无法添加该仓库：" + opErrorText(res)); return; }
     if (!ADDED_REPOS.includes(res.repo)) {
       ADDED_REPOS.push(res.repo);
       saveStored("gg2-repos", ADDED_REPOS);
@@ -2952,7 +3237,7 @@ async function scanForRepos() {
   list.innerHTML = "";
   try {
     const res = await api("findrepos", { ws: SESSION_WS });
-    if (!res.ok) { alert("扫描失败：" + (res.error || "?")); return; }
+    if (!res.ok) { alert("扫描失败：" + opErrorText(res)); return; }
     const repos = res.repos || [];
     if (!repos.length) {
       const none = document.createElement("div");
@@ -2978,7 +3263,7 @@ async function scanForRepos() {
 }
 async function openScannedRepo(repo) {
   const res = await api("addrepo", { path: repo });
-  if (!res.ok) { alert("无法添加该仓库：" + (res.error || "?")); return; }
+  if (!res.ok) { alert("无法添加该仓库：" + opErrorText(res)); return; }
   if (!ADDED_REPOS.includes(res.repo)) {
     ADDED_REPOS.push(res.repo);
     saveStored("gg2-repos", ADDED_REPOS);
@@ -3297,7 +3582,7 @@ $("btnFetch").addEventListener("click", async () => {
   setBusy(b, true, "拉取中…");
   try {
     const res = await api("gitop", { action: "fetch" });
-    if (!res.ok) { alert("拉取失败: " + (res.error || "?")); return; }
+    if (!res.ok) { alert("拉取失败: " + opErrorText(res)); return; }
     await reloadGraphLight();
     refreshWorkdir();
   } catch (err) {
@@ -3322,7 +3607,7 @@ $("btnPush").addEventListener("click", async () => {
   setBusy(b, true, "推送中…");
   try {
     const res = await api("gitop", { action: "push", branch });
-    if (!res.ok) { alert("推送失败: " + (res.error || "?")); return; }
+    if (!res.ok) { alert("推送失败: " + opErrorText(res)); return; }
     alert(res.summary || "推送成功");
   } catch (err) {
     alert("推送失败: " + err.message);
@@ -3337,6 +3622,9 @@ $("repoSwitch").addEventListener("change", (ev) => {
   saveCurRepo(v);
   $("repoLabel").textContent = v;
   $("repoLabel").title = v;
+  /* The repo on screen changed, and with it whether it is remote: the badge,
+   * the ignore buttons and the reveal menu item all key off REPO. */
+  applyRemoteUi();
   wdDiffCache.clear();
   reloadGraphLight();
   refreshWorkdir();
@@ -3348,7 +3636,7 @@ async function checkForUpdate(silent) {
   const btn = $("btnUpdate");
   try {
     const res = await api("checkupdate");
-    if (!res.ok) { if (!silent) alert("检查更新失败: " + (res.error || "?")); return; }
+    if (!res.ok) { if (!silent) alert("检查更新失败: " + opErrorText(res)); return; }
     UPDATE_STATE = res;
     // keep the version badge in the status bar in sync
     const ver = $("ggVersion");
@@ -3390,7 +3678,7 @@ $("btnUpdate").addEventListener("click", async () => {
   setBusy(btn, true, "更新中…");
   try {
     const res = await api("autoupdate", { tag: UPDATE_STATE.latest });
-    if (!res.ok) { alert("更新失败: " + (res.error || "?")); return; }
+    if (!res.ok) { alert("更新失败: " + opErrorText(res)); return; }
     alert("更新完成！请重启 DeepSeek Harness 使新版本生效。");
     btn.classList.add("gg-none");
   } catch (err) {
@@ -3859,9 +4147,14 @@ function openContextMenu(x, y, c) {
   mk("复制仓库路径", "", () => {
     navigator.clipboard?.writeText(REPO || "").catch(() => {});
   });
-  mk("在文件管理器中打开", "", () => {
-    api("reveal").catch(() => {});
-  });
+  /* Omitted entirely for a remote repository: there is no local folder to open,
+   * and the server refuses `reveal` there anyway. A menu item that can only
+   * fail is worse than no item — it reads as a bug rather than a boundary. */
+  if (!remoteActive()) {
+    mk("在文件管理器中打开", "", () => {
+      api("reveal").catch(() => {});
+    });
+  }
   menu.classList.add("show");
   const r = menu.getBoundingClientRect();
   menu.style.left = Math.min(x, window.innerWidth - r.width - 10) + "px";
@@ -3921,7 +4214,7 @@ function openBranchCtxMenu(x, y, r) {
 
 async function runFetch() {
   const res = await api("gitop", { action: "fetch" });
-  if (!res.ok) { alert("拉取失败: " + (res.error || "?")); return; }
+  if (!res.ok) { alert("拉取失败: " + opErrorText(res)); return; }
   await reloadGraphLight();
   refreshWorkdir();
 }
@@ -3937,7 +4230,7 @@ async function checkoutBranch(name) {
     if (!ok) return;
   }
   const res = await api("gitop", { action: "checkout", name });
-  if (!res.ok) { alert("切换失败: " + (res.error || "?")); return; }
+  if (!res.ok) { alert("切换失败: " + opErrorText(res)); return; }
   await reloadGraphLight();
   refreshWorkdir();
 }
@@ -3950,7 +4243,7 @@ async function pushBranch(name) {
   );
   if (!ok) return;
   const res = await api("gitop", { action: "push", branch: name });
-  if (!res.ok) { alert("推送失败: " + (res.error || "?")); return; }
+  if (!res.ok) { alert("推送失败: " + opErrorText(res)); return; }
   alert(res.summary || "推送成功");
 }
 
@@ -3963,7 +4256,7 @@ async function deleteBranch(name, isHead) {
   );
   if (!ok) return;
   const res = await api("gitop", { action: "delete-branch", name });
-  if (!res.ok) { alert("删除失败: " + (res.error || "?")); return; }
+  if (!res.ok) { alert("删除失败: " + opErrorText(res)); return; }
   await reloadGraphLight();
   refreshWorkdir();
 }
@@ -4022,7 +4315,7 @@ function openTagDlg(hash) {
           confirmDialog("删除标签", "确定删除标签 <b>" + safe + "</b>？（仅删除本地标签，不会推送远程）", true, "确认删除").then((ok) => {
             if (!ok) return;
             api("gitop", { action: "tag-delete", name: t }).then((res) => {
-              if (!res.ok) { alert("删除标签失败: " + (res.error || "?")); return; }
+              if (!res.ok) { alert("删除标签失败: " + opErrorText(res)); return; }
               const i = myTags.indexOf(t);
               if (i >= 0) myTags.splice(i, 1);
               rerenderTags();
@@ -4063,7 +4356,7 @@ function openTagDlg(hash) {
       const res = renaming
         ? await api("gitop", { action: "tag-rename", name: renaming, newname: val, hash })
         : await api("gitop", { action: "tag", name: val, hash });
-      if (!res.ok) { alert((renaming ? "改名失败" : "打标签失败") + ": " + (res.error || "?")); return; }
+      if (!res.ok) { alert((renaming ? "改名失败" : "打标签失败") + ": " + opErrorText(res)); return; }
       if (renaming) {
         const i = myTags.indexOf(renaming);
         if (i >= 0) myTags[i] = val;
@@ -4120,7 +4413,7 @@ function openBranchDlg(hash) {
       }
       finish(true);
       const res = await api("gitop", { action: "branch", name: input.value.trim(), hash });
-      if (!res.ok) { alert("创建分支失败: " + (res.error || "?")); return; }
+      if (!res.ok) { alert("创建分支失败: " + opErrorText(res)); return; }
       wdDiffCache.clear();
       await reloadGraphLight();
     };

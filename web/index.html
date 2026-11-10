@@ -22,6 +22,10 @@
 <header>
   <div class="hd-left">
     <span class="title">Git 图谱</span>
+    <!-- Filled in by renderRemoteBadge() when the repository lives on another
+         host. Starts hidden via .gg-none and is never shown with a style
+         attribute (CSP style-src 'self' would drop it). -->
+    <span class="rd-remote gg-none" id="remoteBadge"></span>
     <span class="repo" id="repoLabel" title=""></span>
     <select id="repoSwitch" title="切换仓库"></select>
   </div>

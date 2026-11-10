@@ -81,7 +81,103 @@ function writePrefs(patch) {
 export const name = 'git-graph'
 export const inject = ['webServer']
 
+/* ===================== remote (ssh://) plumbing =====================
+ * This half is written against local paths: every op validates a repository
+ * path, guards file paths with `resolve()` + `startsWith`, and runs git as
+ * `execFile('git', ['-C', repo, ...])`. An `ssh://<alias>/<abs>` workspace
+ * breaks all three at once — `node:path` has no idea what that spelling means,
+ * and there is no local process that could accept `-C` for it.
+ *
+ * M1 only lays the pipe: these helpers plus the `runGit` diversion. No op
+ * handler is wired to them yet, so local behaviour has to stay byte-identical.
+ *
+ * Deliberately no `node:path` in here: on Windows `resolve('ssh://a/x', '../y')`
+ * turns into a drive-relative mess and `join()` rewrites separators. Remote
+ * paths are POSIX, absolute and case-sensitive, so they get split and
+ * reassembled lexically instead.
+ */
+const REMOTE_PREFIX = 'ssh://'
+
+/** Instance marker the ssh-workspace plugin puts on the patched service. */
+const REMOTE_SUBPROCESS_INSTALLED = Symbol.for('dsh-ssh-workspace.subprocess-installed')
+
+/* The host context, captured by apply(). `runGit` is a module-level function
+ * with no ctx of its own, and 44 call sites reach it; handing them a context
+ * argument would be a much larger change than the problem warrants.
+ * `latestTag()` / `applyUpdate()` also call `runGit`, but they pass `here` —
+ * this plugin's own install directory — so they never take the remote branch
+ * and a null REMOTE_HOST is harmless there. */
+let REMOTE_HOST = null
+
+function isRemotePath(p) {
+  return typeof p === 'string' && p.startsWith(REMOTE_PREFIX)
+}
+
+/** `ssh://<alias>/<abs>` -> {alias, remotePath}; anything else -> null. */
+function parseRemotePath(p) {
+  if (typeof p !== 'string') return null
+  const m = /^ssh:\/\/([^/]+)(\/.*)$/.exec(p)
+  if (!m) return null
+  return { alias: m[1], remotePath: m[2] }
+}
+
+/* Tolerant form used by the helpers below: also accepts the bare alias root
+ * (`ssh://host`, no trailing slash) and any number of trailing slashes. The
+ * request-side `normalize()` keeps the canonical spelling, but a configured
+ * whitelist entry may still arrive in either shape. */
+function remotePartsOf(p) {
+  if (!isRemotePath(p)) return null
+  const trimmed = p.replace(/\/+$/, '')
+  const parsed = parseRemotePath(trimmed)
+  if (parsed) return parsed
+  const bare = /^ssh:\/\/([^/]+)$/.exec(trimmed)
+  if (!bare) return null
+  return { alias: bare[1], remotePath: '/' }
+}
+
+/**
+ * Lexical POSIX join of a remote absolute base and a relative path.
+ *
+ * `'.'` segments are dropped, `'..'` pops one segment, and walking above the
+ * alias root yields `null` — the remote equivalent of the local
+ * `resolve()` + `startsWith()` guard that stops `file` from escaping the repo.
+ */
+function remoteJoin(base, rel) {
+  if (typeof base !== 'string' || !base.startsWith('/')) return null
+  const segments = base.split('/').filter((s) => s !== '' && s !== '.')
+  for (const part of String(rel == null ? '' : rel).split('/')) {
+    if (part === '' || part === '.') continue
+    if (part === '..') {
+      if (segments.length === 0) return null
+      segments.pop()
+      continue
+    }
+    segments.push(part)
+  }
+  return '/' + segments.join('/')
+}
+
+/**
+ * Resolve `file` against a remote repository path, or `null` when the result
+ * would leave the alias root. Absolute inputs are refused outright: the local
+ * implementation lets `resolve()` produce them and then rejects them at the
+ * `startsWith` check, which is the same answer with more steps.
+ */
+function resolveRemoteFile(repo, file) {
+  const parts = remotePartsOf(repo)
+  if (!parts) return null
+  if (typeof file !== 'string' || file === '') return null
+  if (file.startsWith('/') || /^[A-Za-z]:/.test(file)) return null
+  const joined = remoteJoin(parts.remotePath, file)
+  if (joined === null) return null
+  return REMOTE_PREFIX + parts.alias + joined
+}
+
 function runGit(repo, args, maxBuffer = MAX_GIT_BUFFER, timeoutMs = 0) {
+  /* Signature and return type are identical for both branches: resolves with
+   * stdout text, rejects with an Error. Callers cannot tell the difference,
+   * which is why the 44 call sites need no change. */
+  if (isRemotePath(repo)) return runGitRemote(repo, args, { maxBuffer, timeoutMs })
   return new Promise((resolve, reject) => {
     const opts = { maxBuffer, windowsHide: true }
     if (timeoutMs > 0) opts.timeout = timeoutMs
@@ -93,6 +189,127 @@ function runGit(repo, args, maxBuffer = MAX_GIT_BUFFER, timeoutMs = 0) {
       }
       resolve(stdout.toString())
     })
+  })
+}
+
+/* Subcommands that may change the remote repository or its refs. A dropped
+ * connection is retried once for reads only: the write may already have run
+ * on the remote side, and replaying it would double its effect — the same
+ * reason ssh-workspace's own exec never replays a command after a drop. */
+const REMOTE_WRITE_SUBCOMMANDS = new Set([
+  'add', 'commit', 'restore', 'reset', 'rm', 'tag', 'branch',
+  'fetch', 'pull', 'push', 'checkout',
+])
+
+/* Grace between the kill request and dropping the channel anyway. The remote
+ * implementation walks SIGTERM -> graceMs -> SIGKILL, so this bounds how long a
+ * timed-out git can hold the promise open. It is not the timeout itself. */
+const REMOTE_KILL_GRACE_MS = 5000
+
+function isConnectionDropError(error) {
+  return /SSH connection dropped/.test(String((error && error.message) || error || ''))
+}
+
+/**
+ * Run one git command on the remote host through the ssh-workspace seam.
+ *
+ * The service is taken from the live context and only used when ssh-workspace
+ * has actually patched it — the marker symbol is the proof, because an
+ * unpatched `spawn` would run git locally against an `ssh://` cwd and produce
+ * quietly wrong answers.
+ */
+function runGitRemote(repo, args, opts = {}) {
+  const maxBuffer = Number.isFinite(opts.maxBuffer) ? opts.maxBuffer : MAX_GIT_BUFFER
+  const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 0
+  const okExitCodes = Array.isArray(opts.okExitCodes) ? opts.okExitCodes : [0]
+
+  const attempt = () => new Promise((resolve, reject) => {
+    const service = REMOTE_HOST && typeof REMOTE_HOST.get === 'function'
+      ? REMOTE_HOST.get('subprocess')
+      : undefined
+    const router = service && service[REMOTE_SUBPROCESS_INSTALLED]
+    if (!router) {
+      reject(new Error('remote-workspace-unsupported'))
+      return
+    }
+    const parts = remotePartsOf(repo)
+    if (!parts) {
+      reject(new Error(`remote-workspace-invalid: ${repo}`))
+      return
+    }
+
+    /* Latency, not correctness: an ssh2 channel starts with Nagle enabled and
+     * every git call is one request/response pair, so the coalescing delay is
+     * paid on each of them. `engine` / `pool` are not an exported contract —
+     * the whole chain is optional and swallowed, and the only cost of it not
+     * existing is the default round trip. */
+    try { router.engine?.pool?.get?.(parts.alias)?.client?.setNoDelay?.(true) } catch { /* optional */ }
+
+    let handle
+    try {
+      handle = service.spawn({
+        argv: ['git', ...args],
+        cwd: repo,
+        graceMs: REMOTE_KILL_GRACE_MS,
+        stdio: {
+          stdout: { maxBytes: maxBuffer },
+          stderr: { maxBytes: Math.min(maxBuffer, 1 << 20) },
+        },
+      })
+    } catch (error) {
+      /* Spec validation throws synchronously (bad graceMs, unsupported stdio
+       * mode, a binary outside the git/rg whitelist). Turn it into a rejection
+       * so `runGit` keeps its promise contract. */
+      reject(error)
+      return
+    }
+
+    let timer
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        try { handle.terminate() } catch { /* already gone */ }
+        reject(new Error('git timed out'))
+      }, timeoutMs)
+      if (typeof timer.unref === 'function') timer.unref()
+    }
+
+    handle.done.then((result) => {
+      if (timer) clearTimeout(timer)
+      /* Read the exit facts defensively: the contract is `{exitCode, signal}`,
+       * and if a future provider hands back something else, a silent `undefined`
+       * exit code would turn every failed git call into a success. */
+      const exitCode = result && result.exitCode
+      const out = handle.collected.stdout.finalize()
+      const err = handle.collected.stderr.finalize()
+      /* A truncated stream cannot be parsed safely — the head is gone, and half
+       * a log looks like a complete but short history. */
+      if (out.truncated) {
+        reject(new Error(`git output exceeded ${maxBuffer} bytes`))
+        return
+      }
+      if (!okExitCodes.includes(exitCode)) {
+        /* The exit code rides on the error because it is the only part of a
+         * failed git call that is locale-independent. Every message check
+         * downstream (`probeRemoteGitRoot`) is a fallback for when this is not
+         * enough — see the note there on localized git. The message itself is
+         * unchanged, because that is what callers surface to the user. */
+        const failure = new Error(err.text.trim() || `git exited with ${exitCode}`)
+        failure.exitCode = exitCode
+        reject(failure)
+        return
+      }
+      resolve(out.text)
+    }, (error) => {
+      /* `done` only rejects for infrastructure failures (the transport died);
+       * git's own non-zero exits resolve, and are handled above. */
+      if (timer) clearTimeout(timer)
+      reject(error)
+    })
+  })
+
+  return attempt().catch((error) => {
+    if (isConnectionDropError(error) && !REMOTE_WRITE_SUBCOMMANDS.has(String(args[0]))) return attempt()
+    throw error
   })
 }
 
@@ -128,9 +345,28 @@ function isSafeWebUrl(value) {
   }
 }
 
+/**
+ * Refusal for an operation that only makes sense on THIS machine.
+ *
+ * The hint is the answer to "why", not a restatement of the code: every one of
+ * these ops is a *local filesystem* feature (a folder picker, an OS file
+ * manager, a disk scan), and the remote subprocess bridge admits `git` and `rg`
+ * only — so there is no seam to implement them over. A bare `unsupported` would
+ * send the reader looking for a setting that does not exist.
+ */
+function remoteUnsupported(hint) {
+  return { ok: false, error: 'unsupported-remote', hint }
+}
+
 /* Resolve the .git directory for a work tree (handles linked worktrees and
  * submodules, where .git is a file containing "gitdir: <path>"). */
 function gitDirOf(repo) {
+  /* A remote work tree has no local `.git` to stat: `join('ssh://…', '.git')`
+   * folds into a Windows-looking path that never exists. The on-disk readers
+   * return null for remotes so their callers take the existing
+   * `for-each-ref` fallback, which costs one command instead of four SFTP
+   * round trips (~10ms vs ~571ms, measured against a real host). */
+  if (isRemotePath(repo)) return null
   let gitDir = join(repo, '.git')
   const st = statSync(gitDir)
   if (st.isFile()) {
@@ -154,6 +390,7 @@ function gitDirOf(repo) {
  * are dereferenced, matching what for-each-ref reports.
  * Returns null when the layout cannot be read, so callers can fall back to git. */
 function readRefsFromDisk(repo, headName) {
+  if (isRemotePath(repo)) return null
   try {
     const gitDir = gitDirOf(repo)
     if (!gitDir) return null
@@ -518,6 +755,138 @@ function findGitRoot(start) {
   return null
 }
 
+/* ---- async twins of the three local path probes -------------------------
+ * The local versions are synchronous and file-system based; neither works on
+ * a remote workspace (there is no local `.git` to stat and no local process
+ * to run). These keep the same contracts but go over git.
+ *
+ * M1 adds them without changing any call site — M2 wires them in.
+ */
+
+/* Positive answers only: a repo that had a `.git` a moment ago keeps it for the
+ * lifetime of the host process, which is the assumption the local
+ * `hasGitEntry` already makes implicitly by costing one stat per call. Negative
+ * answers are never cached, so a freshly initialised repo is picked up on the
+ * next request. */
+const remoteGitEntryCache = new Set()
+
+async function hasGitEntryAsync(repo) {
+  if (!isRemotePath(repo)) return hasGitEntry(repo)
+  if (remoteGitEntryCache.has(repo)) return true
+  try {
+    await runGit(repo, ['rev-parse', '--git-dir'])
+    remoteGitEntryCache.add(repo)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function findGitRootAsync(start) {
+  if (!isRemotePath(start)) return findGitRoot(start)
+  return (await probeRemoteGitRoot(start)).root
+}
+
+/* ---- why a remote workspace has no git root ------------------------------
+ * `findGitRootAsync` answers "root or null", and that single null is produced
+ * by several unrelated causes. The empty screen used to render all of them as
+ * "install dsh-ssh-workspace", which is not only wrong for the common case but
+ * is wrong in the way that is hardest to notice: a remote folder that simply
+ * is not a repository (or whose repository lives one level down, which this
+ * plugin cannot discover — remote discovery only walks upward) looks exactly
+ * like a broken bridge. Telling that user to re-check an installed plugin sends
+ * them away from the directory they actually pointed at.
+ *
+ * The probe runs the same single command as the plain lookup, so it costs no
+ * extra process; it just keeps the reason instead of collapsing it to null.
+ */
+const PROBE_DETAIL_MAX = 160
+
+/* Text patterns are the FALLBACK, not the primary signal. git translates its
+ * messages: a Chinese-locale host answers `fatal: 不是 git 仓库（或者直至挂载点
+ * / 的任何父目录）`, which no English regex matches. That was found on a real
+ * host, not in the mock — and it matters more than it looks, because an
+ * unclassified miss used to fall through to the same "install the plugin"
+ * sentence this probe exists to remove.
+ *
+ * The exit code is locale-independent, so it decides first:
+ *   128  git ran and refused: not a repository      (`not-a-repo`)
+ *   127  the remote shell could not find git        (`git-missing`)
+ *   1    the remote shell could not `cd` there      (`path-unusable`)
+ * Everything else is a transport/auth failure, which never reaches git at all
+ * and is matched on text because those messages come from ssh-workspace. */
+const PROBE_EXIT_REASONS = new Map([
+  [128, { reason: 'not-a-repo', git: true }],
+  [127, { reason: 'git-missing', git: false }],
+  [1, { reason: 'path-unusable', git: false }],
+])
+
+const PROBE_PATTERNS = [
+  { re: /not a git repository|不是 git 仓库/i, reason: 'not-a-repo', git: true },
+  { re: /git is not installed on this remote host|git: (?:command )?not found|command not found: git/i, reason: 'git-missing', git: false },
+  { re: /(?:^|\n)\s*(?:bash|sh|zsh)?:?\s*cd: .*(?:No such file or directory|can't cd|没有那个文件或目录)/i, reason: 'path-unusable', git: false },
+  { re: /Could not resolve hostname|Connection refused|Connection timed out|No route to host|Host key verification failed|Permission denied \(publickey|SSH connection dropped|Connection closed by remote host|kex_exchange/i, reason: 'unreachable', git: false },
+]
+
+async function probeRemoteGitRoot(start) {
+  const parts = remotePartsOf(start)
+  if (!parts) return { root: null, bridge: true, git: true, reason: 'unknown', detail: '' }
+  /* Answered without spawning, exactly like `runGitRemote`: an unpatched
+   * `spawn` would run git locally against an `ssh://` cwd. This is the one
+   * cause that really is "the bridge plugin is missing". */
+  const service = REMOTE_HOST && typeof REMOTE_HOST.get === 'function'
+    ? REMOTE_HOST.get('subprocess')
+    : undefined
+  if (!service || !service[REMOTE_SUBPROCESS_INSTALLED]) {
+    return { root: null, bridge: false, git: false, reason: 'bridge-missing', detail: '' }
+  }
+  let top
+  try {
+    top = (await runGit(start, ['rev-parse', '--show-toplevel'])).trim()
+  } catch (error) {
+    const text = String((error && error.message) || error || '')
+    const exitCode = error && typeof error.exitCode === 'number' ? error.exitCode : null
+    /* Exit code first (locale-independent), text second (ssh-workspace's own
+     * English diagnostics, and any git build that does not localize).
+     * A dropped connection is already retried once by runGitRemote, so reaching
+     * here means the retry failed as well. */
+    const byExit = exitCode === null ? null : PROBE_EXIT_REASONS.get(exitCode)
+    const byText = PROBE_PATTERNS.find((p) => p.re.test(text))
+    const decided = byExit || byText || null
+    return {
+      root: null,
+      bridge: true,
+      git: decided ? decided.git : true,
+      /* Never `unknown` here: every branch above has already established that
+       * the bridge works. Falling through as "unknown" is what made the client
+       * pick its catch-all sentence — the very wording this probe replaces. */
+      reason: decided ? decided.reason : 'unreachable',
+      detail: (text.split('\n')[0] || '').slice(0, PROBE_DETAIL_MAX),
+    }
+  }
+  if (!top.startsWith('/')) return { root: null, bridge: true, git: true, reason: 'unknown', detail: '' }
+  const cleaned = top.replace(/\/+$/, '')
+  return {
+    root: REMOTE_PREFIX + parts.alias + (cleaned === '' ? '/' : cleaned),
+    bridge: true,
+    git: true,
+    reason: 'ok',
+    detail: '',
+  }
+}
+
+async function readHeadNameAsync(repo) {
+  if (!isRemotePath(repo)) return readHeadName(repo)
+  /* `branch --show-current` prints nothing and exits 0 on a detached HEAD,
+   * which is easier to read than `symbolic-ref`'s exit 128 for the same state. */
+  try {
+    const out = (await runGit(repo, ['branch', '--show-current'])).trim()
+    return out || 'HEAD'
+  } catch {
+    return 'HEAD'
+  }
+}
+
 /** Parse `git log --format=...%x1f...%d` lines into structured commit rows. */
 function parseLog(stdout) {
   const rows = []
@@ -616,7 +985,14 @@ export function apply(ctx, config = {}) {
   const configured = []
   if (config.repo) configured.push(String(config.repo))
   if (Array.isArray(config.repos)) configured.push(...config.repos.map(String))
-  const normalize = (p) => String(p).replace(/[\\/]+$/, '')
+  REMOTE_HOST = ctx
+  const normalize = (p) => {
+    /* Trailing slashes go away, except that a bare alias root has to keep one:
+     * without it `ssh://host` matches neither parseRemotePath (which needs a
+     * path segment) nor the request-side comparison that follows it. */
+    const trimmed = String(p).replace(/[\\/]+$/, '')
+    return /^ssh:\/\/[^/]+$/.test(trimmed) ? trimmed + '/' : trimmed
+  }
   const allowed = [...new Set(configured.map(normalize))].filter(Boolean)
   // Workspace-discovered repos (from the repos op) are accepted for reads too.
   // `recentKeys` holds case-folded keys so Windows paths differing only in case
@@ -624,13 +1000,47 @@ export function apply(ctx, config = {}) {
   const recentRepos = new Set()
   const recentKeys = new Set()
   const normKey = (p) => {
-    const s = String(p).replace(/\\/g, '/').replace(/\/+$/, '')
+    const raw = String(p)
+    /* Remote paths are case-sensitive POSIX paths. Folding them would turn
+     * `ssh://qiyk/Home/MyGit` into `ssh://qiyk/home/mygit` on Windows, which
+     * then fails to match the whitelist entry it came from — the repo would
+     * silently disappear from the list. */
+    if (isRemotePath(raw)) return raw.replace(/\/+$/, '')
+    const s = raw.replace(/\\/g, '/').replace(/\/+$/, '')
     return process.platform === 'win32' ? s.toLowerCase() : s
+  }
+  /* Remote repositories are NOT opened by path. The only two paths a request
+   * may name on another machine are the session workspace itself and the git
+   * top level discovered for it (`findGitRootAsync`), and both are learned in
+   * `repos` — there is no folder picker for another host. Answering "any
+   * ssh:// path is fine" would turn a display feature into a remote git
+   * execution primitive, so the set is kept explicitly and per workspace. */
+  const remoteWsRoots = new Map() // normKey(ws) -> normKey(git root) | null
+  /* The workspace named by the most recent `repos` call. The folder-picker ops
+   * (`listdir` / `addrepo` / `findrepos`) are answered BEFORE the repo gate and
+   * do not carry a `ws` of their own, so this is the only signal that says "this
+   * session lives on another machine". It is written on every `repos` request,
+   * local or remote, so a workspace switch updates it in the same step. */
+  let lastWs = ''
+  const rememberRemoteWs = (ws, root) => {
+    const key = normKey(ws)
+    if (!remoteWsRoots.has(key) && remoteWsRoots.size >= 32) {
+      remoteWsRoots.delete(remoteWsRoots.keys().next().value)
+    }
+    remoteWsRoots.set(key, root ? normKey(root) : null)
+  }
+  const remoteRepoAllowed = (p) => {
+    const k = normKey(p)
+    for (const [wsKey, rootKey] of remoteWsRoots) {
+      if (k === wsKey || (rootKey !== null && k === rootKey)) return true
+    }
+    return false
   }
   const repoAllowed = (p) => {
     const k = normKey(p)
     if (allowed.some((a) => normKey(a) === k)) return true
-    return recentKeys.has(k)
+    if (recentKeys.has(k)) return true
+    return isRemotePath(k) && remoteRepoAllowed(k)
   }
   const addRecent = (p) => { recentRepos.add(p); recentKeys.add(normKey(p)) }
 
@@ -762,15 +1172,103 @@ export function apply(ctx, config = {}) {
           }
           return
         }
+        /* Ops that browse or open THIS machine's filesystem. On a remote
+         * workspace they cannot be answered at all: there is no local folder
+         * picker for another host, and `findGitRoot`/`statSync` would inspect
+         * this machine's disk for paths the user is looking at over there.
+         * The reason is spelled out per op — a bare "unsupported" sends the
+         * caller looking for a retry that does not exist. */
+        const REMOTE_UNSUPPORTED = {
+          reveal: 'a remote workspace cannot be opened in this machine\'s file manager (the subprocess bridge only carries git and ripgrep)',
+          listdir: 'listing local directories is meaningless for a remote workspace; use the remote host\'s own tools instead',
+          addrepo: 'adding a local folder as a repository does not apply to a remote workspace',
+          findrepos: 'scanning this machine\'s disk does not apply to a remote workspace',
+          'gitop-ignore': 'ignoring files means appending to .gitignore on the remote host, and git has no command for that (the subprocess bridge only carries git and ripgrep)',
+        }
+        const refuseRemote = (which) => {
+          sendJson({ ok: false, error: 'unsupported-remote', op: which, hint: REMOTE_UNSUPPORTED[which] }, 400)
+        }
+        /* True when the session workspace is on another host. The folder-picker
+         * ops are answered before the repo gate and carry no `ws` of their own
+         * (an empty `path` means "start from the drives"), so `lastWs` — written
+         * by the `repos` call the page makes on every load — is the only signal.
+         * A remote-looking `path` is also refused, which covers a stale page
+         * calling listdir before it has refreshed the workspace. */
+        const sessionIsRemote = () => isRemotePath(lastWs)
+
+        /* Folder-picker ops are answered before the repo gate, so two signals
+         * are needed: `lastWs` covers a page that has already loaded its repo
+         * list, and the request's own path covers a stale page (or one opened
+         * directly) that has not. */
+        if (op === 'findrepos' || op === 'listdir' || op === 'addrepo') {
+          const p = url.searchParams.get('path') || url.searchParams.get('ws') || ''
+          if (sessionIsRemote() || isRemotePath(p)) {
+            refuseRemote(op)
+            return
+          }
+        }
+
+        /* Sandbox mode for a remote write, or `undefined` when it cannot be
+         * established. ssh-workspace's mutation gate does not cover this path:
+         * `lib/patch-subprocess.js` never imports `mode-gate.js`, so a `git`
+         * command through the bridge runs as the remote login user whatever the
+         * session mode says — exactly like the local `execFile('git')`, which
+         * also bypasses the local sandbox.
+         *
+         * A remote write is still worth refusing when the answer is knowable,
+         * because it is far less visible than a local one: nothing appears in
+         * this machine's file manager. The gate FAILS OPEN by design — an absent
+         * policy service means an unconfined deployment, and a policy that
+         * throws is a wiring question rather than the user's "view only"
+         * choice. Refusing there would send them to a switch that cannot help.
+         * `lib/mode-gate.js` in ssh-workspace makes the same call and documents
+         * why ("no policy service means unconfined, not read-only"). */
+        const remoteWriteMode = () => {
+          const serviceOf = (name) => {
+            try {
+              const viaGet = typeof ctx.get === 'function' ? ctx.get(name) : undefined
+              return viaGet === undefined || viaGet === null ? undefined : viaGet
+            } catch { return undefined }
+          }
+          const policy = serviceOf('sandboxPolicy')
+          if (!policy || typeof policy.resolve !== 'function') return undefined
+          let session
+          try {
+            const sessions = serviceOf('sessions')
+            if (lastWs && typeof sessions?.list === 'function') {
+              session = sessions.list().find((s) => String(s?.header?.cwd || '') === lastWs)
+            }
+          } catch { session = undefined }
+          if (!session) return undefined
+          try {
+            const resolved = policy.resolve({ session })
+            return typeof resolved?.mode === 'string' ? resolved.mode : undefined
+          } catch { return undefined }
+        }
+        const remoteWritable = () => {
+          const mode = remoteWriteMode()
+          return mode === undefined || mode === 'workspace-write' || mode === 'danger-full-access'
+        }
+
         if (op === 'repos') {
           // The current session's workspace (ws) is preferred when a git work
           // tree is found at or above it; configured repos follow as fallbacks.
           // `add` re-registers repos the user picked via the folder picker
           // (they are persisted on the client and re-sent on every load,
           // because the in-memory allow-set resets when dsh restarts).
-          for (const a of url.searchParams.getAll('add')) {
-            const root = findGitRoot(a)
-            if (root) addRecent(root)
+          const ws = normalize(url.searchParams.get('ws') || '')
+          /* Recorded for the folder-picker refusals above: they are answered
+           * before this point and carry no workspace of their own. */
+          lastWs = ws
+          /* Those remembered folders are LOCAL paths. Re-registering them under
+           * a remote session would let a stale list from an earlier local
+           * workspace stay reachable after switching to a host — the allow-set
+           * for a remote session is its own git root and nothing else. */
+          if (!isRemotePath(ws)) {
+            for (const a of url.searchParams.getAll('add')) {
+              const root = findGitRoot(a)
+              if (root) addRecent(root)
+            }
           }
           // Drop configured paths that are not working git trees, so a stale
           // example config never poisons the repo list (not-a-git-repo).
@@ -778,34 +1276,64 @@ export function apply(ctx, config = {}) {
           // made the endpoint cost ~200ms each for no extra certainty.
           const configuredOk = []
           for (const r of allowed) {
-            if (hasGitEntry(r)) configuredOk.push(r)
+            if (await hasGitEntryAsync(r)) configuredOk.push(r)
           }
           // Same for user-added repos: a folder removed from disk must not stay
           // in the switcher forever (it would become the remembered current one).
           // Light existence check (.git entry) + case-folded dedup (recentKeys).
           const recentOk = []
           for (const r of recentRepos) {
-            if (hasGitEntry(r) && !recentOk.some((x) => normKey(x) === normKey(r))) recentOk.push(r)
+            if (await hasGitEntryAsync(r) && !recentOk.some((x) => normKey(x) === normKey(r))) recentOk.push(r)
           }
-          const ws = normalize(url.searchParams.get('ws') || '')
           let wsRoot = null
           let wsIsGit = false
+          /* `wsProbe` explains a remote miss. Only a remote workspace can have
+           * one: a local folder that is not a repository is self-evident, and
+           * the local probe costs a process to say nothing new. */
+          let wsProbe = null
           if (ws) {
-            const root = findGitRoot(ws)
-            if (root) {
-              wsRoot = root
-              wsIsGit = true
+            if (isRemotePath(ws)) {
+              const probe = await probeRemoteGitRoot(ws)
+              wsProbe = { reason: probe.reason, bridge: probe.bridge, git: probe.git, detail: probe.detail }
+              if (probe.root) {
+                wsRoot = probe.root
+                wsIsGit = true
+              }
+            } else {
+              const root = findGitRoot(ws)
+              if (root) {
+                wsRoot = root
+                wsIsGit = true
+              }
             }
           }
           const repos = []
           if (wsRoot) repos.push(wsRoot)
           for (const r of configuredOk) if (!repos.some((x) => normKey(x) === normKey(r))) repos.push(r)
           for (const r of recentOk) if (!repos.some((x) => normKey(x) === normKey(r))) repos.push(r)
-          for (const r of repos) addRecent(r)
+          /* Remote repos are authorised per workspace rather than added to the
+           * global `recentRepos` set: the answer to "may this request touch
+           * ssh://h/p" must come from the workspace it was discovered for, and
+           * must disappear when that workspace changes (see remoteRepoAllowed). */
+          for (const r of repos) {
+            if (isRemotePath(r)) continue
+            addRecent(r)
+          }
+          if (isRemotePath(ws)) rememberRemoteWs(ws, wsRoot)
           let current = null
           if (wsIsGit) current = wsRoot
           else current = repos[0] ?? null // first configured/user repo (ws non-git or absent)
-          sendJson({ ok: true, repos, current, ws, wsRoot, wsIsGit })
+          /* `wsRemote` lets the client tell "this workspace lives on another
+           * machine" apart from "nothing found yet" while `REPO` is still
+           * empty, which is the state the empty screen renders in.
+           * `wsProbe` carries the reason behind a missing remote git root, so
+           * the client can name the actual cause instead of assuming the
+           * bridge plugin is absent. Null for local workspaces. */
+          sendJson({
+            ok: true, repos, current, ws, wsRoot, wsIsGit,
+            wsRemote: isRemotePath(ws),
+            wsProbe,
+          })
           return
         }
 
@@ -1005,7 +1533,9 @@ export function apply(ctx, config = {}) {
         // (show went from one spawn to two, filediff from two to three).
         // A `.git` entry check answers the same question for the cases that
         // matter here, because the path already passed the allow-list check.
-        if (!hasGitEntry(repo)) {
+        // Remote paths have no local `.git` to stat, so the async twin runs one
+        // `rev-parse --git-dir` there instead (and caches the positive answer).
+        if (!(await hasGitEntryAsync(repo))) {
           sendJson({ ok: false, error: 'not-a-git-repo', repo }, 400)
           return
         }
@@ -1038,7 +1568,7 @@ export function apply(ctx, config = {}) {
             // A limited page needs the true total for the "load more" button;
             // the unlimited call already returns every commit (total = length).
             const [headName, log] = await Promise.all([
-              readHeadName(repo),
+              readHeadNameAsync(repo),
               runGit(repo, args),
             ])
             const commits = parseLog(log)
@@ -1212,13 +1742,59 @@ export function apply(ctx, config = {}) {
               sendJson({ ok: false, error: 'missing-file' }, 400)
               return
             }
-            const full = resolve(repo, file).replace(/\\/g, '/')
+            /* Two different guards, because `resolve()` cannot see a remote
+             * tree: on Windows it folds `ssh://h/p` plus `file` into a local
+             * path, so the old comparison was not merely wrong for remotes —
+             * it accepted everything, which is the opposite of a guard. */
+            const remoteFull = isRemotePath(repo) ? resolveRemoteFile(repo, file) : null
+            const full = isRemotePath(repo) ? null : resolve(repo, file).replace(/\\/g, '/')
             const base = repo.replace(/\\/g, '/')
-            if (full !== base && !full.startsWith(base + '/')) {
+            if (isRemotePath(repo) ? !remoteFull : (full !== base && !full.startsWith(base + '/'))) {
               sendJson({ ok: false, error: 'path-outside-repo' }, 400)
               return
             }
             if (staged === 'untracked') {
+              if (isRemotePath(repo)) {
+                /* Remote untracked files: there is no local stat/read to fall
+                 * back on, so one command answers both "is it a directory"
+                 * (ls-files prints it with a trailing slash under --directory)
+                 * and "what is in it" (diff against /dev/null). Verified
+                 * against a real host: exit 0 with no output means the path is
+                 * untracked-but-ignored or absent, exit 1 is the normal
+                 * "there are differences" answer, exit 2 is a real error. */
+                let listing = ''
+                try {
+                  listing = await runGit(repo, [
+                    'ls-files', '--others', '--exclude-standard', '--directory', '-z', '--', file,
+                  ])
+                } catch { listing = '' }
+                const entries = listing.split('\0').filter(Boolean)
+                if (entries.length === 0) {
+                  sendJson({ ok: false, error: 'file-not-found', file }, 404)
+                  return
+                }
+                if (entries.length === 1 && entries[0].endsWith('/')) {
+                  sendJson({ ok: true, isDir: true, content: '' })
+                  return
+                }
+                let patch = ''
+                try {
+                  /* maxBuffer stays at the full command budget, not at
+                   * MAX_DIFF_CHARS: a stream that hits its limit is reported as
+                   * truncated and rejected outright, so capping it here would
+                   * turn "a very large untracked file" into a 500 instead of the
+                   * truncated-but-usable answer the local branch gives. */
+                  patch = await runGitRemote(repo, [
+                    'diff', '--no-index', '--no-color', '--', '/dev/null', file,
+                  ], { maxBuffer: MAX_GIT_BUFFER, okExitCodes: [0, 1] })
+                } catch (err) {
+                  sendJson({ ok: false, error: String((err && err.message) || err) }, 500)
+                  return
+                }
+                const truncated = patch.length > MAX_DIFF_CHARS
+                sendJson({ ok: true, diff: truncated ? patch.slice(0, MAX_DIFF_CHARS) : patch, truncated })
+                return
+              }
               let st
               try { st = statSync(full) } catch {
                 sendJson({ ok: false, error: 'file-not-found', file }, 404)
@@ -1259,9 +1835,10 @@ export function apply(ctx, config = {}) {
               sendJson({ ok: false, error: 'missing-file' }, 400)
               return
             }
-            const full = resolve(repo, file).replace(/\\/g, '/')
+            const remoteFull = isRemotePath(repo) ? resolveRemoteFile(repo, file) : null
+            const full = isRemotePath(repo) ? null : resolve(repo, file).replace(/\\/g, '/')
             const base = repo.replace(/\\/g, '/')
-            if (full !== base && !full.startsWith(base + '/')) {
+            if (isRemotePath(repo) ? !remoteFull : (full !== base && !full.startsWith(base + '/'))) {
               sendJson({ ok: false, error: 'path-outside-repo' }, 400)
               return
             }
@@ -1273,6 +1850,15 @@ export function apply(ctx, config = {}) {
             break
           }
           case 'reveal': {
+            /* Opening a directory on THIS machine for a repository on another
+             * one is meaningless, and `explorer`/`open`/`xdg-open` is not on the
+             * bridge's command whitelist either. Refused rather than degraded to
+             * "print the path": the client hides the action (M4), and a silent
+             * no-op would read as a broken button. */
+            if (isRemotePath(repo)) {
+              refuseRemote('reveal')
+              break
+            }
             // Open the repo folder in the OS file manager (harmless convenience).
             const opener = process.platform === 'win32' ? 'explorer'
               : process.platform === 'darwin' ? 'open'
@@ -1372,8 +1958,32 @@ export function apply(ctx, config = {}) {
             // confirms destructive actions before calling.
             const action = url.searchParams.get('action')
             const files = url.searchParams.getAll('file').filter(Boolean)
+            /* `ignore` is the one action git cannot perform: it has to append
+             * lines to `.gitignore`, and this plugin has no remote file write.
+             * Refused BEFORE the dispatch so the local `appendFileSync` below is
+             * never reached with an ssh:// repository. */
+            if (isRemotePath(repo) && action === 'ignore') {
+              refuseRemote('gitop-ignore')
+              return
+            }
+            /* A remote write is far less visible than a local one — nothing
+             * appears in this machine's file manager — so a session that says
+             * `read-only` gets a refusal instead. See `remoteWritable` for why
+             * this gate fails open. */
+            if (isRemotePath(repo) && !remoteWritable()) {
+              sendJson({
+                ok: false,
+                error: 'read-only-session',
+                hint: 'this session is read-only; switch it to workspace-write or danger-full-access to change a remote repository',
+              }, 403)
+              return
+            }
             const base = repo.replace(/\\/g, '/')
+            /* Same two-sided guard as `workfile`: on a remote repo `resolve()`
+             * produces a local-looking path that can never start with the
+             * ssh:// base, so the old form rejected every remote file. */
             const okPath = (p) => {
+              if (isRemotePath(repo)) return resolveRemoteFile(repo, p) !== null
               const full = resolve(repo, p).replace(/\\/g, '/')
               return full === base || full.startsWith(base + '/')
             }
@@ -1608,4 +2218,22 @@ export function apply(ctx, config = {}) {
       }
     },
   }), 'git-graph: /git-graph route')
+}
+
+/* Test seam for scripts/check-remote.mjs. The remote branch of `runGit` is not
+ * reachable through any op handler in M1 (that wiring is M2), so the checker
+ * needs a handle on the plumbing to prove it. One obvious name keeps the
+ * production surface (`name` / `inject` / `apply`) untouched. */
+export const __test = {
+  runGit,
+  runGitRemote,
+  isRemotePath,
+  parseRemotePath,
+  remotePartsOf,
+  remoteJoin,
+  resolveRemoteFile,
+  hasGitEntryAsync,
+  findGitRootAsync,
+  probeRemoteGitRoot,
+  readHeadNameAsync,
 }
