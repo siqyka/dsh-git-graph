@@ -192,6 +192,88 @@ function runGit(repo, args, maxBuffer = MAX_GIT_BUFFER, timeoutMs = 0) {
   })
 }
 
+/* Retry a small number of transient transport failures for remote reads.
+ *
+ * `git fetch` / `git pull` against GitHub over SSH fails here now and then with
+ * "Connection reset by <ip> port 22": the session is dropped for a moment, the
+ * credentials and the repository are fine, and a retry seconds later succeeds.
+ * git itself never retries, so one unlucky reset turned a whole 拉取 click into
+ * a hard failure. What follows are the messages OpenSSH / libcurl / git print
+ * for that class of transport loss. Auth and repository errors ("Permission
+ * denied", "Repository not found", "does not appear to be a git repository")
+ * are deliberately absent — retrying those only wastes time.
+ *
+ * Read paths only. `push` is a write on the remote: when its connection drops
+ * after the ref was updated the command may already have taken effect, which
+ * is exactly what REMOTE_WRITE_SUBCOMMANDS guards against. Timeouts are also
+ * left out on purpose: three 120s attempts would keep the button spinning for
+ * six minutes instead of failing visibly.
+ *
+ * If every attempt fails the last error is rethrown unchanged, so the op's
+ * error payload still carries git's own stderr. */
+const TRANSIENT_GIT_FAILURE = /Connection reset|Connection closed|Connection refused|kex_exchange_identification|ssh_exchange_identification|early EOF|RPC failed|remote end hung up|Broken pipe|unexpected disconnect|packet_write_wait|Recv failure|gnutls_handshake|SSL_ERROR/i
+
+const GIT_RETRY_ATTEMPTS = 3
+
+async function runGitRetry(repo, args, maxBuffer = MAX_GIT_BUFFER, timeoutMs = 0) {
+  let lastError = null
+  for (let attempt = 1; attempt <= GIT_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return await runGit(repo, args, maxBuffer, timeoutMs)
+    } catch (err) {
+      lastError = err
+      const message = String((err && err.message) || err)
+      if (!TRANSIENT_GIT_FAILURE.test(message)) throw err
+      // 600ms, then 1200ms: long enough for a reset socket to clear, short
+      // enough that a failing fetch still settles well inside its 120s budget.
+      if (attempt < GIT_RETRY_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, 600 * attempt))
+    }
+  }
+
+  /* Every normal attempt hit the same transport error. The usual cause on this
+   * network is GitHub's SSH endpoint on port 22 being reset, and the documented
+   * fallback is ssh.github.com:443. This is the last line of defence: it needs
+   * no ~/.ssh/config edit and no change on the user's side, and when the 443
+   * endpoint is unreachable as well the original error is still what surfaces.
+   *
+   * -c core.sshCommand reaches only this one git invocation. ssh.github.com
+   * serves the same host keys as github.com, so HostKeyAlias reuses the
+   * already-trusted entry instead of demanding a new known_hosts line. */
+  if (!isRemotePath(repo) && await everyRemoteIsGithubSsh(repo)) {
+    try {
+      return await runGit(repo, ['-c', `core.sshCommand=${GITHUB_SSH_443}`, ...args], maxBuffer, timeoutMs)
+    } catch {
+      /* 443 did not help either — keep the original transport error below */
+    }
+  }
+  throw lastError
+}
+
+/* One git invocation's SSH override for the 443 fallback. Deliberately plain
+ * `ssh` rather than an absolute path: git resolves it through the same PATH it
+ * used for the failed run, and a hard-coded client path would break on another
+ * machine. */
+const GITHUB_SSH_443 = 'ssh -p 443 -o HostName=ssh.github.com -o HostKeyAlias=github.com'
+
+const isGithubSshUrl = (url) => /^git@github\.com[:/]/.test(url) || /^ssh:\/\/git@github\.com\//.test(url)
+
+/* True only when every configured remote is a github.com SSH URL. A repo that
+ * also points at another SSH host (GitLab, an office box) must not have that
+ * host's name rewritten to ssh.github.com, so the fallback is skipped there. */
+async function everyRemoteIsGithubSsh(repo) {
+  let out
+  try {
+    out = await runGit(repo, ['remote', '-v'])
+  } catch {
+    return false
+  }
+  const urls = out.split('\n').map((line) => {
+    const match = /^\S+\t(\S+)/.exec(line)
+    return match ? match[1] : ''
+  }).filter(Boolean)
+  return urls.length > 0 && urls.every(isGithubSshUrl)
+}
+
 /* Subcommands that may change the remote repository or its refs. A dropped
  * connection is retried once for reads only: the write may already have run
  * on the remote side, and replaying it would double its effect — the same
@@ -2102,14 +2184,14 @@ export function apply(ctx, config = {}) {
                 case 'fetch': {
                   // Pull remote refs into refs/remotes (no merge). Works with the
                   // configured origin, or any remote if none named.
-                  await runGit(repo, ['fetch', '--all', '--prune'], MAX_GIT_BUFFER, 120000)
+                  await runGitRetry(repo, ['fetch', '--all', '--prune'], MAX_GIT_BUFFER, 120000)
                   break
                 }
                 case 'pull': {
                   // Pull + merge the current branch from origin (may conflict; the
                   // client warns before calling). Returns the pull summary.
                   const branch = url.searchParams.get('branch')
-                  const out = await runGit(repo, ['pull', 'origin', branch || ''], MAX_GIT_BUFFER, 120000)
+                  const out = await runGitRetry(repo, ['pull', 'origin', branch || ''], MAX_GIT_BUFFER, 120000)
                   sendJson({ ok: true, summary: String(out).trim() })
                   return
                 }
@@ -2226,6 +2308,7 @@ export function apply(ctx, config = {}) {
  * production surface (`name` / `inject` / `apply`) untouched. */
 export const __test = {
   runGit,
+  runGitRetry,
   runGitRemote,
   isRemotePath,
   parseRemotePath,
